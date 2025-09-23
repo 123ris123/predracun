@@ -3,15 +3,14 @@ import { db, seedIfEmpty } from '../store/db.js'
 import { Link } from 'react-router-dom'
 import { Coffee } from 'lucide-react'
 
-/** veličina stola (~+20%) */
-const TABLE_SIZE = 38
+/** veličina stola (~+20% od 38) */
+const TABLE_SIZE = 46
 
 /** helper: fallback xpct/ypct ako još imamo stari grid x,y */
 function getPercentFromLegacy(t){
   if (typeof t.xpct === 'number' && typeof t.ypct === 'number') {
     return { xpct: t.xpct, ypct: t.ypct }
   }
-  // Ako su x,y ranije bili grid koordinatе (0..N-1), prebacimo u “centar ćelije”
   if (typeof t.x === 'number' && typeof t.y === 'number'){
     const GRID_W = 24, GRID_H = 14
     return {
@@ -60,8 +59,8 @@ export default function TableMap(){
   }, [ordersOpen, items])
 
   return (
-    <div className="fullscreen-map pr-64">{/* ostavi prostor za desni sidebar */}
-      {/* POZADINA – GIF ide “skroz levo”, poravnat isto kao u Admin/LayoutTab */}
+    <div className="fullscreen-map">{/* ostavi prostor za desni sidebar u glavnom layoutu (App pr-56) */}
+      {/* POZADINA – GIF “skroz levo” i identično Admin/Layout-u */}
       <div className="tables-area">
         <img className="tables-img" src="/tables-bg.gif" alt="Mapa lokala" />
         <div className="tables-area-overlay" />
@@ -74,7 +73,6 @@ export default function TableMap(){
             const { xpct, ypct } = getPercentFromLegacy(t)
             const isBusy = occupied.has(t.id)
 
-            // klase za status: slobodan = zeleni, zauzet = crveni
             const statusClasses = isBusy
               ? 'bg-red-600/85 border-red-700 text-white hover:bg-red-600'
               : 'bg-green-600/85 border-green-700 text-white hover:bg-green-600'

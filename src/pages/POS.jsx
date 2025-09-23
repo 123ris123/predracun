@@ -5,6 +5,7 @@ import { Card, Button } from '../components/UI.jsx'
 import { BackBar } from '../App.jsx'
 import * as Icons from 'lucide-react'
 import { Grid2X2, Star, Printer, Users } from 'lucide-react'
+import { useTheme } from '../store/useTheme.js'
 
 const TAB_ALL = -1
 const TAB_TOP = -2
@@ -71,7 +72,7 @@ function buildPrintCSS(){
       .qr { display:block; margin:8px auto 0 auto; width: 28mm; height:auto; }
       .qr-url { text-align:center; font-size:11px; word-break:break-all; opacity:.95; margin-top:2px; }
 
-      /* Modal */
+      /* Modal (split) */
       .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:60; }
       .modal-card { width: min(720px, 96vw); background:#fff; color:#111; border-radius:14px; padding:16px; border:1px solid #ddd; }
       @media (prefers-color-scheme: dark){
@@ -257,6 +258,7 @@ function SplitModal({ open, onClose, sourceItems, products, onConfirm }){
 export default function POS(){
   const [params] = useSearchParams()
   const nav = useNavigate()
+  const { theme } = useTheme()
   const tableId = parseInt(params.get('table') || '0')
   const quickMode = !tableId
 
@@ -297,7 +299,7 @@ export default function POS(){
     }
   })() },[tableId])
 
-  /* === Dodavanje/izmena artikala — sada sa guestId === */
+  /* === Dodavanje/izmena artikala — sa guestId === */
   async function addItem(p){
     const g = activeGuest || 1
     if (quickMode){
@@ -351,16 +353,35 @@ export default function POS(){
     return items.filter(i => (i.guestId||1) === activeGuest)
   }, [items, activeGuest])
 
+  /* --- pomoćne agregacije po gostima (za “sjaj” na tabovima) --- */
+  const qtyByGuest = useMemo(()=>{
+    const m = new Map()
+    for (let g=1; g<=MAX_GUESTS; g++) m.set(g, 0)
+    for (const i of items){
+      const g = i.guestId || 1
+      m.set(g, (m.get(g)||0) + i.qty)
+    }
+    return m
+  }, [items])
+
+  /* ======== Štampa — uvek štampa AKTIVAN TAB ======== */
+  async function printActive(){
+    if (activeGuest === GUEST_ALL) {
+      // štampa sve (ceo sto)
+      return printAndArchiveAll()
+    }
+    // štampa samo izabranog gosta — ista logika kao “payGuest”, ali je sada to jedino dugme
+    return payGuest(activeGuest)
+  }
+
   /* === Naplata gosta (arhiva + štampa samo njegovih stavki) === */
   async function payGuest(g){
-    // skupi stavke izabranoj gostu
     const list = quickMode
       ? items.filter(i => (i.guestId||1) === g)
       : await db.table('orderItems').where('orderId').equals(orderId).toArray().then(arr => arr.filter(i => (i.guestId||1)===g))
 
     if (list.length === 0) return
 
-    // priprema za štampu
     const mapped = list.map(it=>{
       const p = products.find(x=>x.id===it.productId)
       return { name: p?.name ?? 'Artikal', qty: it.qty, priceEach: it.priceEach ?? p?.price ?? 0 }
@@ -375,10 +396,8 @@ export default function POS(){
     await archiveOrder(tempOrderId)
 
     if (quickMode){
-      // obriši iz lokalnog state-a
       setItems(prev => prev.filter(i => (i.guestId||1)!==g))
     } else {
-      // obriši iz glavnog ordera u bazi
       for (const it of list){
         await db.table('orderItems').delete(it.id)
       }
@@ -395,7 +414,7 @@ export default function POS(){
     openPrint(html)
   }
 
-  /* ======== Štampa celog predračuna (Svi) ======== */
+  /* ======== Štampa “Svi” (ceo sto) ======== */
   async function printAndArchiveAll(){
     let list = items
     let label = quickMode ? 'Brzo kucanje' : `Sto #${tableId}`
@@ -403,7 +422,6 @@ export default function POS(){
     if (!quickMode){
       list = await db.table('orderItems').where('orderId').equals(orderId).toArray()
     }
-
     if (list.length === 0) return
 
     const mapped = list.map(it=>{
@@ -412,7 +430,7 @@ export default function POS(){
     })
     const totalNow = mapped.reduce((s,i)=> s + i.qty*i.priceEach, 0)
 
-    // arhiva svega
+    // arhiva
     if (quickMode){
       const id = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
       for (const it of list){
@@ -437,7 +455,7 @@ export default function POS(){
     if (!quickMode) nav('/')
   }
 
-  /* ======== Split (deo) – ostavljeno iz prethodne verzije ======== */
+  /* ======== Split (deo) — ostavljeno ======== */
   async function handleSplitConfirm(picked){
     if (!picked || picked.length===0){ setSplitOpen(false); return }
 
@@ -500,17 +518,6 @@ export default function POS(){
     setItems([])
   }
 
-  /* --- pomoćne agregacije po gostima (za dugmad naplate) --- */
-  const qtyByGuest = useMemo(()=>{
-    const m = new Map()
-    for (let g=1; g<=MAX_GUESTS; g++) m.set(g, 0)
-    for (const i of items){
-      const g = i.guestId || 1
-      m.set(g, (m.get(g)||0) + i.qty)
-    }
-    return m
-  }, [items])
-
   return (
     <div className="max-w-7xl mx-auto p-4 grid md:grid-cols-2 gap-4">
       <div className="md:col-span-2">
@@ -522,16 +529,29 @@ export default function POS(){
           <div className="text-lg font-semibold">
             {quickMode ? 'Brzo kucanje' : `Sto #${tableId}`}
           </div>
-          {/* Guest switcher */}
+          {/* Guest switcher (tabovi) */}
           <div className="flex items-center gap-2">
             <span className="text-sm opacity-80 hidden sm:inline-flex items-center gap-1"><Users size={16}/>Gosti:</span>
-            <GuestBtn active={activeGuest===GUEST_ALL} onClick={()=>setActiveGuest(GUEST_ALL)}>Svi</GuestBtn>
+            <GuestBtn
+              active={activeGuest===GUEST_ALL}
+              glow={false}
+              theme={theme}
+              onClick={()=>setActiveGuest(GUEST_ALL)}
+            >
+              Svi
+            </GuestBtn>
             {Array.from({length: MAX_GUESTS}).map((_,idx)=>{
               const g = idx+1
               const count = qtyByGuest.get(g) || 0
               return (
-                <GuestBtn key={g} active={activeGuest===g} onClick={()=>setActiveGuest(g)}>
-                  G{g}{count>0 ? ` (${count})` : ''}
+                <GuestBtn
+                  key={g}
+                  active={activeGuest===g}
+                  glow={count>0}
+                  theme={theme}
+                  onClick={()=>setActiveGuest(g)}
+                >
+                  G{g}
                 </GuestBtn>
               )
             })}
@@ -546,56 +566,29 @@ export default function POS(){
         </div>
 
         <div className="mt-4 border-t border-neutral-200/70 dark:border-neutral-800 pt-3 flex items-center justify-between">
-          <div className="text-lg">Ukupno (svi):</div>
-          <div className="text-2xl font-bold">{total.toFixed(2)} RSD</div>
+          <div className="text-lg">
+            Ukupno {activeGuest===GUEST_ALL ? '(svi)' : `(G${activeGuest})`}:
+          </div>
+          <div className="text-2xl font-bold">
+            {(
+              (activeGuest===GUEST_ALL ? items : items.filter(i => (i.guestId||1)===activeGuest))
+                .reduce((s,i)=>s+i.qty*(i.priceEach||0),0)
+            ).toFixed(2)} RSD
+          </div>
         </div>
 
-        {/* Dugmad naplate */}
-        {quickMode ? (
-          <div className="mt-3 grid grid-cols-1 gap-2">
-            <Button onClick={printAndArchiveAll} className="w-full touch-btn flex items-center justify-center gap-2">
-              <Printer size={18}/> Štampaj sve
-            </Button>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-              {Array.from({length: MAX_GUESTS}).map((_,idx)=>{
-                const g = idx+1
-                const disabled = (qtyByGuest.get(g)||0)===0
-                return (
-                  <Button key={g} onClick={()=>payGuest(g)} disabled={disabled} className="w-full bg-amber-600 hover:bg-amber-700 touch-btn">
-                    Naplati G{g}
-                  </Button>
-                )
-              })}
-            </div>
-            {items.length>0 && (
-              <Button onClick={()=>setSplitOpen(true)} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn">
-                Podeli račun (deo)
-              </Button>
-            )}
-          </div>
-        ) : (
-          <div className="mt-3 grid gap-2"
-               style={{gridTemplateColumns:'repeat(6, minmax(0,1fr))'}}>
-            <Button onClick={printAndArchiveAll} className="col-span-3 md:col-span-3 touch-btn flex items-center justify-center gap-2">
-              <Printer size={18}/> Štampaj sve
-            </Button>
-            {Array.from({length: MAX_GUESTS}).map((_,idx)=>{
-              const g = idx+1
-              const disabled = (qtyByGuest.get(g)||0)===0
-              return (
-                <Button key={g} onClick={()=>payGuest(g)} disabled={disabled} className="touch-btn bg-amber-600 hover:bg-amber-700">
-                  G{g}
-                </Button>
-              )
-            })}
-            <Button onClick={()=>setSplitOpen(true)} className="col-span-6 bg-neutral-700 hover:bg-neutral-600 touch-btn">
-              Podeli račun (deo)
-            </Button>
-            <Button onClick={saveAndBack} className="col-span-6 bg-neutral-700 hover:bg-neutral-600 touch-btn">
-              Sačuvaj / Nazad
-            </Button>
-          </div>
-        )}
+        {/* Jedno dugme — štampa AKTIVAN TAB */}
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button onClick={printActive} className="w-full touch-btn flex items-center justify-center gap-2 col-span-2 md:col-span-1">
+            <Printer size={18}/> {activeGuest===GUEST_ALL ? 'Štampaj sve' : `Štampaj G${activeGuest}`}
+          </Button>
+          <Button onClick={()=>setSplitOpen(true)} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn col-span-2 md:col-span-1">
+            Podeli račun (deo)
+          </Button>
+          <Button onClick={saveAndBack} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn col-span-2">
+            Sačuvaj / Nazad
+          </Button>
+        </div>
       </Card>
 
       <Card className="order-1 md:order-2">
@@ -625,7 +618,9 @@ export default function POS(){
             >
               <div className="font-semibold text-[15px]">{p.name}</div>
               <div className="text-sm opacity-70 mt-1">{p.price.toFixed(2)} RSD</div>
-              <div className="mt-1 text-[11px] opacity-70">→ upis za <b>G{activeGuest||1}</b></div>
+              <div className="mt-1 text-[11px] opacity-70">
+                {activeGuest===GUEST_ALL ? '→ upis za sto' : <>→ upis za <b>G{activeGuest}</b></>}
+              </div>
             </button>
           ))}
           {filteredProducts.length===0 && (
@@ -647,14 +642,20 @@ export default function POS(){
 }
 
 /* ---- UI helpers ---- */
-function GuestBtn({active, onClick, children}){
+function GuestBtn({active, glow, theme, onClick, children}){
+  // glow: ako gost ima stavki -> narandžasto (light) / plavo (dark)
+  const glowCls = glow
+    ? (theme==='dark'
+        ? 'ring-2 ring-sky-500 bg-sky-500/15 border-sky-500'
+        : 'ring-2 ring-amber-500 bg-amber-500/15 border-amber-500')
+    : ''
   return (
     <button
       onClick={onClick}
       className={`px-2.5 py-1.5 rounded-lg text-sm border transition touch-btn
         ${active
-          ? 'bg-brand/20 border-brand text-neutral-900 dark:text-white'
-          : 'bg-[var(--surface)] border-neutral-200/80 hover:border-brand dark:bg-neutral-900 dark:border-neutral-800'
+          ? `bg-brand/20 border-brand text-neutral-900 dark:text-white ${glowCls}`
+          : `bg-[var(--surface)] border-neutral-200/80 hover:border-brand dark:bg-neutral-900 dark:border-neutral-800 ${glowCls}`
         }`}
     >
       {children}
@@ -681,12 +682,11 @@ function ItemRow({item, onInc, onDec, products}){
   const p = products.find(x=>x.id===item.productId)
   const name = p?.name ?? 'Artikal'
   const price = item.priceEach ?? p?.price ?? 0
-  const g = item.guestId || 1
   return (
     <div className="flex items-center justify-between border border-neutral-200/80 dark:border-neutral-800 rounded-2xl px-3 py-2 transition bg-[var(--surface)]">
       <div>
         <div className="font-medium">{name}</div>
-        <div className="text-xs opacity-70">{price.toFixed(2)} RSD &middot; <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700">G{g}</span></div>
+        <div className="text-xs opacity-70">{price.toFixed(2)} RSD</div>
       </div>
       <div className="flex items-center gap-2">
         <button onClick={onDec} className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-200/80 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:border-neutral-800 touch-btn transition">−</button>
