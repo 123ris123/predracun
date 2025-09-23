@@ -11,7 +11,6 @@ function getPercentFromLegacy(t){
   if (typeof t.xpct === 'number' && typeof t.ypct === 'number') {
     return { xpct: t.xpct, ypct: t.ypct }
   }
-  // Ako su x,y ranije bili grid koordinatе (0..N-1), prebacimo u “centar ćelije”
   if (typeof t.x === 'number' && typeof t.y === 'number'){
     const GRID_W = 24, GRID_H = 14
     return { xpct: Math.min(1, Math.max(0, (t.x + 0.5)/GRID_W)), ypct: Math.min(1, Math.max(0, (t.y + 0.5)/GRID_H)) }
@@ -48,7 +47,6 @@ export default function TableMap(){
     }
   },[reload])
 
-  // zauzet = postoji OPEN order sa ≥1 stavkom
   const occupied = useMemo(()=>{
     const qtyByOrder = items.reduce((m,i)=> (m[i.orderId]=(m[i.orderId]||0)+i.qty, m), {})
     const busy = new Set()
@@ -57,8 +55,8 @@ export default function TableMap(){
   }, [ordersOpen, items])
 
   return (
-    <div className="fullscreen-map pr-56">{/* ostavi prostor za desni sidebar iz App.jsx */}
-      {/* POZADINA — koristimo <img> da GIF bude ceo (bez sečenja) */}
+    <div className="fullscreen-map pr-64">{/* širina usklađena sa sidebar-om */}
+      {/* POZADINA – GIF ide “skroz levo” jer je kontejner full-bleed; nav je fiksiran desno */}
       <div className="tables-area">
         <img className="tables-img" src="/tables-bg.gif" alt="Mapa lokala" />
         <div className="tables-area-overlay" />

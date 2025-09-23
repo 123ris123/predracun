@@ -81,7 +81,7 @@ export default function Admin(){
 
   if (!user) {
     return (
-      <div className="max-w-xl mx-auto p-4 pr-56">
+      <div className="max-w-xl mx-auto p-4 pr-64">
         <Card>
           <div className="text-lg font-semibold">Pristup ograničen</div>
           <div className="opacity-80">Prijavite se kao admin da biste uređivali artikle, kategorije, stolove i račune.</div>
@@ -91,7 +91,7 @@ export default function Admin(){
   }
 
   return (
-    <div className="p-4 pr-56 space-y-4">
+    <div className="p-4 pr-64 space-y-4">
       <div className="flex flex-wrap gap-2">
         <Button className={tab==='products'?'opacity-100':'opacity-60'} onClick={()=>setTab('products')}>Proizvodi</Button>
         <Button className={tab==='categories'?'opacity-100':'opacity-60'} onClick={()=>setTab('categories')}>Kategorije</Button>
@@ -305,11 +305,12 @@ function ProductsTab({ categories, products, onChange }){
   )
 }
 
-/* -------------------- RASPORED: fullscreen editor sa istom slikom kao mapa stolova --------------------- */
+/* -------------------- RASPORED --------------------- */
 function LayoutTab({ tables, onChange }){
   const stageRef = useRef(null)
   const [selectedId, setSelectedId] = useState(null)
   const [dragId, setDragId] = useState(null)
+  const [openEditor, setOpenEditor] = useState(false) // FULLSCREEN editor
 
   function toPct(clientX, clientY){
     const host = stageRef.current
@@ -366,85 +367,135 @@ function LayoutTab({ tables, onChange }){
   }
 
   return (
-    <div className="grid lg:grid-cols-[280px,1fr] gap-4">
-      <Card>
-        <div className="text-lg font-semibold mb-3">Stolovi</div>
-        <div className="mb-2">
-          <Button onClick={addTable}>+ Dodaj sto</Button>
-        </div>
-        <div className="space-y-2 max-h-[60vh] overflow-auto pr-1">
-          {tables.map(t=>{
-            const active = selectedId === t.id
-            const label = (t.name || `Sto ${t.id}`)
-            return (
-              <button key={t.id} onClick={()=>setSelectedId(t.id)}
-                className={`w-full text-left px-3 py-2 rounded-xl border transition
-                  ${active ? 'border-brand bg-brand/10' : 'border-neutral-200 dark:border-neutral-800 hover:border-brand'}`}>
-                <div className="font-medium">{label}</div>
-                <div className="text-xs opacity-70">x:{(t.xpct??0).toFixed?.(2) ?? '—'} y:{(t.ypct??0).toFixed?.(2) ?? '—'}</div>
-              </button>
-            )
-          })}
-          {tables.length===0 && <div className="opacity-70">Nema stolova.</div>}
-        </div>
-      </Card>
-
-      {/* FULLSCREEN-LIKE editor – ista veličina i pozadina kao TableMap */}
-      <Card>
-        <div className="text-lg font-semibold mb-3">Raspored — ista slika, ista veličina kao na mapi</div>
-
-        <div className="relative rounded-2xl overflow-hidden fullscreen-map">
-          {/* identična pozadina: koristimo <img> da GIF ne bude isečen */}
-          <div className="tables-area">
-            <img className="tables-img" src="/tables-bg.gif" alt="Mapa lokala" />
-            <div className="tables-area-overlay" />
+    <>
+      <div className="grid lg:grid-cols-[280px,1fr] gap-4">
+        <Card>
+          <div className="text-lg font-semibold mb-3">Stolovi</div>
+          <div className="mb-2 flex gap-2">
+            <Button onClick={addTable}>+ Dodaj sto</Button>
+            <Button onClick={()=>setOpenEditor(true)} className="bg-neutral-700 hover:bg-neutral-600">Editor rasporeda (cela mapa)</Button>
           </div>
+          <div className="space-y-2 max-h-[60vh] overflow-auto pr-1">
+            {tables.map(t=>{
+              const active = selectedId === t.id
+              const label = (t.name || `Sto ${t.id}`)
+              return (
+                <button key={t.id} onClick={()=>setSelectedId(t.id)}
+                  className={`w-full text-left px-3 py-2 rounded-xl border transition
+                    ${active ? 'border-brand bg-brand/10' : 'border-neutral-200 dark:border-neutral-800 hover:border-brand'}`}>
+                  <div className="font-medium">{label}</div>
+                  <div className="text-xs opacity-70">x:{(t.xpct??0).toFixed?.(2) ?? '—'} y:{(t.ypct??0).toFixed?.(2) ?? '—'}</div>
+                </button>
+              )
+            })}
+            {tables.length===0 && <div className="opacity-70">Nema stolova.</div>}
+          </div>
+        </Card>
 
-          {/* Stage za rad */}
-          <div
-            ref={stageRef}
-            className="tables-stage select-none"
-            onClick={handleGridClick}
-          >
-            {/* Stolovi */}
-            <div className="relative w-full h-full">
-              {tables.map(t=>{
-                let xpct = typeof t.xpct === 'number' ? t.xpct : (typeof t.x==='number' ? Math.min(1, Math.max(0, (t.x+0.5)/24)) : 0.05)
-                let ypct = typeof t.ypct === 'number' ? t.ypct : (typeof t.y==='number' ? Math.min(1, Math.max(0, (t.y+0.5)/14)) : 0.05)
-                const active = selectedId === t.id
-                return (
-                  <div
-                    key={t.id}
-                    onPointerDown={(e)=>handlePointerDown(e, t.id)}
-                    onTouchStart={(e)=>handlePointerDown(e, t.id)}
-                    className={`absolute rounded-lg border flex items-center justify-center select-none cursor-grab active:cursor-grabbing
-                      ${active ? 'border-brand bg-brand/10' : 'border-neutral-300 hover:border-brand dark:border-neutral-700'}
-                    `}
-                    style={{
-                      left: `calc(${(xpct*100).toFixed(3)}% - ${TABLE_SIZE/2}px)`,
-                      top:  `calc(${(ypct*100).toFixed(3)}% - ${TABLE_SIZE/2}px)`,
-                      width: TABLE_SIZE, height: TABLE_SIZE
-                    }}
-                  >
-                    <span className="text-[11px] font-semibold">{t.name || `Sto ${t.id}`}</span>
+        {/* Pregled u kartici (može ostati), ali za 100% istu poziciju koristi FULL editor */}
+        <Card>
+          <div className="text-lg font-semibold mb-3">Raspored — pregled</div>
+          <div className="relative rounded-2xl overflow-hidden" style={{height: 'calc(100svh - 220px)'}}>
+            <div className="tables-area">
+              <img className="tables-img" src="/tables-bg.gif" alt="Mapa lokala" />
+              <div className="tables-area-overlay" />
+            </div>
+            <div
+              ref={stageRef}
+              className="tables-stage select-none"
+              onClick={handleGridClick}
+            >
+              <div className="relative w-full h-full">
+                {tables.map(t=>{
+                  let xpct = typeof t.xpct === 'number' ? t.xpct : (typeof t.x==='number' ? Math.min(1, Math.max(0, (t.x+0.5)/24)) : 0.05)
+                  let ypct = typeof t.ypct === 'number' ? t.ypct : (typeof t.y==='number' ? Math.min(1, Math.max(0, (t.y+0.5)/14)) : 0.05)
+                  const active = selectedId === t.id
+                  return (
+                    <div
+                      key={t.id}
+                      onPointerDown={(e)=>handlePointerDown(e, t.id)}
+                      onTouchStart={(e)=>handlePointerDown(e, t.id)}
+                      className={`absolute rounded-lg border flex items-center justify-center select-none cursor-grab active:cursor-grabbing
+                        ${active ? 'border-brand bg-brand/10' : 'border-neutral-300 hover:border-brand dark:border-neutral-700'}
+                      `}
+                      style={{
+                        left: `calc(${(xpct*100).toFixed(3)}% - ${TABLE_SIZE/2}px)`,
+                        top:  `calc(${(ypct*100).toFixed(3)}% - ${TABLE_SIZE/2}px)`,
+                        width: TABLE_SIZE, height: TABLE_SIZE
+                      }}
+                    >
+                      <span className="text-[11px] font-semibold">{t.name || `Sto ${t.id}`}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="mt-2 text-sm opacity-80">
+            Za potpuno precizno postavljanje (identično mapi), koristi <b>Editor rasporeda (cela mapa)</b>.
+          </div>
+        </Card>
+      </div>
+
+      {/* FULLSCREEN EDITOR – isti “view” kao mapa stolova */}
+      {openEditor && (
+        <div className="fixed inset-0 z-[90]">
+          <div className="absolute inset-0 bg-black/50" onClick={()=>setOpenEditor(false)} />
+          <div className="absolute inset-0 pointer-events-none pr-64">{/* isto polje kao glavni view (pr-64 = širina sidebara) */}
+            <div className="relative w-full h-full pointer-events-auto">
+              {/* Toolbar */}
+              <div className="no-print absolute top-3 left-3 z-10 flex gap-2">
+                <Button onClick={()=>setOpenEditor(false)} className="bg-neutral-700 hover:bg-neutral-600">Zatvori</Button>
+                <Button onClick={()=>setSelectedId(null)} className="bg-neutral-700/70 hover:bg-neutral-600/80">Poništi selekciju</Button>
+              </div>
+
+              {/* Identicna pozadina/veličina kao TableMap */}
+              <div className="fullscreen-map">
+                <div className="tables-area">
+                  <img className="tables-img" src="/tables-bg.gif" alt="Mapa lokala" />
+                  <div className="tables-area-overlay" />
+                </div>
+                <div
+                  ref={stageRef}
+                  className="tables-stage select-none"
+                  onClick={handleGridClick}
+                >
+                  <div className="relative w-full h-full">
+                    {tables.map(t=>{
+                      let xpct = typeof t.xpct === 'number' ? t.xpct : (typeof t.x==='number' ? Math.min(1, Math.max(0, (t.x+0.5)/24)) : 0.05)
+                      let ypct = typeof t.ypct === 'number' ? t.ypct : (typeof t.y==='number' ? Math.min(1, Math.max(0, (t.y+0.5)/14)) : 0.05)
+                      const active = selectedId === t.id
+                      return (
+                        <div
+                          key={t.id}
+                          onPointerDown={(e)=>handlePointerDown(e, t.id)}
+                          onTouchStart={(e)=>handlePointerDown(e, t.id)}
+                          className={`absolute rounded-lg border flex items-center justify-center select-none cursor-grab active:cursor-grabbing
+                            ${active ? 'border-brand bg-brand/10' : 'border-neutral-300 hover:border-brand dark:border-neutral-700'}
+                          `}
+                          style={{
+                            left: `calc(${(xpct*100).toFixed(3)}% - ${TABLE_SIZE/2}px)`,
+                            top:  `calc(${(ypct*100).toFixed(3)}% - ${TABLE_SIZE/2}px)`,
+                            width: TABLE_SIZE, height: TABLE_SIZE
+                          }}
+                        >
+                          <span className="text-[11px] font-semibold">{t.name || `Sto ${t.id}`}</span>
+                        </div>
+                      )
+                    })}
                   </div>
-                )
-              })}
+                </div>
+              </div>
             </div>
           </div>
         </div>
-
-        <div className="mt-2 text-sm opacity-80">
-          Savet: dodirni prazno mesto da postaviš izabrani sto, ili prevuci postojeći sto prstom. Pozicija se čuva u procentima — prikaz je identičan mapi stolova.
-        </div>
-      </Card>
-    </div>
+      )}
+    </>
   )
 }
 
-/* -------------------- RAČUNI (arhiva predračuna) — pregled, pretraga, brisanje --------------------- */
+/* -------------------- RAČUNI (arhiva predračuna) — neizmenjeno osim pr-64 gore u layoutu --------------------- */
 function ReceiptsTab(){
-  // (neizmenjeno)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [tableId, setTableId] = useState('')

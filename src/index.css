@@ -4,15 +4,15 @@
 
 /* ===== Tema (soft light & modern) ===== */
 :root {
-  --nav-h: 64px; /* visina topbara ili rezervisana vrednost */
+  --nav-h: 64px;
 }
 
 :root.light {
-  --bg: #f3f4f6;        /* svetla neutralna siva */
-  --surface: #e5e7eb;   /* svetla siva površina */
-  --text: #1f2937;      /* neutral-800 */
-  --muted: #6b7280;     /* neutral-500 */
-  --border: #d1d5db;    /* neutral-300 */
+  --bg: #f3f4f6;
+  --surface: #e5e7eb;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --border: #d1d5db;
 }
 
 :root.dark {
@@ -31,9 +31,9 @@ html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   transition: background .2s ease, color .2s ease;
-  overflow-x: hidden;                 /* UGASI horizontalni skrol */
-  overscroll-behavior-x: none;        /* ne “puca” sa strane */
-  touch-action: pan-y;                /* dozvoli samo vertikalni pan (suzbija swipe levo/desno na većini browsera) */
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
 }
 
 /* Pomocne klase */
@@ -46,7 +46,7 @@ div[role="card"], .card, .bg-surface {
   transition: background .2s ease, border .2s ease;
 }
 
-/* ===== Fullscreen kontejner za mapu stolova (ispod nava / desnog sidebara) ===== */
+/* ===== Fullscreen mapa ===== */
 .fullscreen-map {
   height: 100svh;
   min-height: 100svh;
@@ -55,9 +55,7 @@ div[role="card"], .card, .bg-surface {
   overflow: hidden;
 }
 
-/* Pozadina sada koristi <img> da bi GIF stao ceo bez sečenja.
-   object-fit: contain = bez “crop”-a; image je centriran; pošto “taman staje”, popuniće prostor.
-   Ako malo “fali”, prirodno će imati tanke trake, ali slika neće biti isečena. */
+/* Pozadina: <img> bez sečenja */
 .tables-area {
   position: absolute;
   inset: 0;
@@ -68,9 +66,9 @@ div[role="card"], .card, .bg-surface {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;     /* ključ: bez sečenja */
-  object-position: center; /* centriraj */
-  pointer-events: none;    /* da ne hvata klikove */
+  object-fit: contain;     /* bez crop-a, centrirano */
+  object-position: center;
+  pointer-events: none;
 }
 .tables-area-overlay {
   position: absolute; inset: 0;
