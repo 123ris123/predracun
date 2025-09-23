@@ -4,7 +4,7 @@ import { Card, Button } from '../components/UI.jsx'
 import { format } from 'date-fns'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
-/* === PRINT TEMPLATES (80mm) za izveštaje === */
+/* === PRINT TEMPLATES (80mm) — preseci sa listom artikala === */
 function buildPrintCSS(){
   return `
     <style>
@@ -18,6 +18,10 @@ function buildPrintCSS(){
       .small { font-size: 11px; }
       .muted { opacity:.9 }
       .bold { font-weight:700 }
+      .mono { font-variant-numeric: tabular-nums; }
+      .name { flex:1; padding-right:6px; }
+      .qty { min-width: 36px; text-align:right; }
+      .amt { min-width: 62px; text-align:right; }
       .mt2 { margin-top:6px } .mb2 { margin-bottom:6px }
     </style>
   `
@@ -39,6 +43,19 @@ function groupByDay(rows){
     map.set(key, prev)
   }
   return Array.from(map.values()).sort((a,b)=>a.day.localeCompare(b.day))
+}
+
+/* nova pomoćna: grupisanje artikala */
+function groupItems(rows){
+  const m = new Map()
+  for (const r of rows){
+    const name = r.name || r.productName || `Artikal${r.productId ? ' #' + r.productId : ''}`
+    const prev = m.get(name) || { name, qty: 0, amt: 0 }
+    prev.qty += (r.qty || 0)
+    prev.amt += (r.qty || 0) * (r.priceEach || 0)
+    m.set(name, prev)
+  }
+  return Array.from(m.values()).sort((a,b)=> b.qty - a.qty || b.amt - a.amt)
 }
 
 export default function Reports(){
@@ -84,17 +101,28 @@ export default function Reports(){
   const sumLast7 = last7.reduce((s,d)=>s+d.total,0)
 
   function printDay(d){
+    // sve stavke tog dana
+    const itemsOfDay = sales.filter(s => s.day === d.day)
+    const grouped = groupItems(itemsOfDay)
     const css = buildPrintCSS()
+    const rows = grouped.map(it => `
+      <div class="row mono">
+        <div class="name">${it.name}</div>
+        <div class="qty">${it.qty}</div>
+        <div class="amt">${it.amt.toFixed(2)} RSD</div>
+      </div>
+    `).join('')
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
       <body><div class="receipt">
         <div class="center bold">PRESEK ZA DAN</div>
         <div class="center small muted">${d.day}</div>
         <div class="hr"></div>
-        <div class="row"><div>Ukupno artikala</div><div class="bold">${d.count}</div></div>
-        <div class="row"><div>Ukupan promet</div><div class="bold">${d.total.toFixed(2)} RSD</div></div>
+        <div class="row mono"><div>Ukupan promet</div><div class="bold">${d.total.toFixed(2)} RSD</div></div>
+        <div class="row mono"><div>Ukupno artikala</div><div class="bold">${d.count}</div></div>
         <div class="hr"></div>
-        <div class="center small">Hvala!</div>
+        <div class="center small bold">ARTIKLI</div>
+        ${rows || '<div class="small muted">Nema podataka o artiklima.</div>'}
       </div>
       <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 50) };</script>
       </body></html>
@@ -103,16 +131,30 @@ export default function Reports(){
   }
 
   function printWeek(){
+    // poslednjih 7 dana — uzmi sve stavke iz tih dana i grupiši
+    const daySet = new Set(last7.map(d => d.day))
+    const itemsOfWeek = sales.filter(s => daySet.has(s.day))
+    const grouped = groupItems(itemsOfWeek)
     const css = buildPrintCSS()
-    const rows = last7.map(d=>`<div class="row"><div>${d.day}</div><div>${d.total.toFixed(2)} RSD</div></div>`).join('')
+    const rowsDays = last7.map(d=>`<div class="row mono"><div>${d.day}</div><div>${d.total.toFixed(2)} RSD</div></div>`).join('')
+    const rowsItems = grouped.map(it => `
+      <div class="row mono">
+        <div class="name">${it.name}</div>
+        <div class="qty">${it.qty}</div>
+        <div class="amt">${it.amt.toFixed(2)} RSD</div>
+      </div>
+    `).join('')
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
       <body><div class="receipt">
         <div class="center bold">PRESEK POSLEDNJIH 7 DANA</div>
         <div class="hr"></div>
-        ${rows || '<div class="small muted">Nema podataka.</div>'}
+        ${rowsDays || '<div class="small muted">Nema podataka.</div>'}
         <div class="hr"></div>
-        <div class="row"><div class="bold">Ukupno 7 dana</div><div class="bold">${sumLast7.toFixed(2)} RSD</div></div>
+        <div class="row mono"><div class="bold">Ukupno 7 dana</div><div class="bold">${sumLast7.toFixed(2)} RSD</div></div>
+        <div class="hr"></div>
+        <div class="center small bold">ARTIKLI (UKUPNO)</div>
+        ${rowsItems || '<div class="small muted">Nema podataka o artiklima.</div>'}
       </div>
       <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 50) };</script>
       </body></html>

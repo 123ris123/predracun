@@ -13,7 +13,7 @@ function getIconByName(name){
   return Icons[name] || Icons.Utensils
 }
 
-/* === PRINT TEMPLATES (80mm) === */
+/* === PRINT TEMPLATES (80mm) — “pravi račun”, bez QR i uz napomenu === */
 function buildPrintCSS(){
   return `
     <style>
@@ -22,41 +22,72 @@ function buildPrintCSS(){
       * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       .receipt { width: 72mm; margin: 0 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.25; padding: 6px 4px; }
       .center { text-align: center; }
+      .left { text-align: left; }
       .row { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
       .hr { border-top:1px dashed #000; margin:6px 0; }
       .muted { opacity:.9 }
       .small { font-size: 11px; }
-      .tot { font-weight: 700; }
+      .bold { font-weight: 700; }
+      .mono { font-variant-numeric: tabular-nums; }
       .qty { min-width: 22px; text-align:right; }
-      .name { flex:1; }
-      .price { min-width: 48px; text-align:right; }
-      .mt2 { margin-top: 6px; } .mt1 { margin-top: 3px; }
-      .mb2 { margin-bottom: 6px; }
-      .nowrap { white-space: nowrap; }
+      .name { flex:1; padding-right:6px; word-break: break-word; }
+      .unit { min-width: 62px; text-align:right; }
+      .sum { min-width: 62px; text-align:right; }
+      .mt2 { margin-top: 6px; } .mt1 { margin-top: 3px; } .mb2 { margin-bottom: 6px; }
+      .foot-warn { margin-top: 8px; border-top:1px solid #000; padding-top:6px; text-align:center; font-weight:700; }
     </style>
   `
 }
 
-function buildReceiptHTML({ title='Predračun', tableLabel='Brzo kucanje', items=[], total=0, footerNote='Hvala!' }){
+function formatDateTime(d=new Date()){
+  // Lokalno sr-RS formatisanje: npr. 23.09.2025. 14:37
+  return d.toLocaleString('sr-RS')
+}
+
+function buildReceiptHTML({ shop, meta, items=[], total=0, warning='OVO NIJE FISKALNI RAČUN' }){
   const css = buildPrintCSS()
-  const lines = items.map(it => `
-    <div class="row">
-      <div class="qty">${it.qty}×</div>
-      <div class="name">${it.name}</div>
-      <div class="price">${(it.qty * it.priceEach).toFixed(2)} RSD</div>
+  const header = `
+    <div class="center bold">${shop.name}</div>
+    ${shop.address ? `<div class="center small">${shop.address}</div>` : ''}
+    ${shop.pib ? `<div class="center small">PIB: ${shop.pib}</div>` : ''}
+    ${shop.mesto ? `<div class="center small">${shop.mesto}</div>` : ''}
+  `
+  const metaBlock = `
+    <div class="row small mono"><div>${meta.title}</div><div>${meta.datetime}</div></div>
+    <div class="row small mono"><div>${meta.refLeft}</div><div>${meta.refRight}</div></div>
+  `
+  const headCols = `
+    <div class="row small muted mono">
+      <div class="name left">Artikal</div>
+      <div class="unit">Kol × Cena</div>
+      <div class="sum">Iznos</div>
     </div>
-  `).join('')
+  `
+  const lines = items.map(it => {
+    const unit = `${it.qty}× ${(it.priceEach || 0).toFixed(2)}`
+    const sum = (it.qty * (it.priceEach||0)).toFixed(2)
+    return `
+      <div class="row mono">
+        <div class="name">${it.name || 'Artikal'}</div>
+        <div class="unit">${unit}</div>
+        <div class="sum">${sum} RSD</div>
+      </div>
+    `
+  }).join('')
+
   return `
     <!doctype html><html><head><meta charset="utf-8">${css}</head>
     <body>
       <div class="receipt">
-        <div class="center"><b>${title}</b></div>
-        <div class="center small muted">${tableLabel}</div>
+        ${header}
         <div class="hr"></div>
+        ${metaBlock}
+        <div class="hr"></div>
+        ${headCols}
         ${lines || '<div class="small muted">— Nema stavki —</div>'}
         <div class="hr"></div>
-        <div class="row tot"><div>UKUPNO</div><div>${total.toFixed(2)} RSD</div></div>
-        <div class="mt2 center small">${footerNote}</div>
+        <div class="row bold mono"><div>UKUPNO</div><div>${total.toFixed(2)} RSD</div></div>
+        <div class="foot-warn small">${warning}</div>
       </div>
       <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 50) };</script>
     </body></html>
@@ -156,14 +187,12 @@ export default function POS(){
     return products.filter(p => p.categoryId === activeTab)
   }, [products, activeTab, topIds])
 
-  /* NOVO: štampa preko template-a (80mm) — bez viška papira */
+  /* Štampa: pravi izgled, bez QR; dno: OVO NIJE FISKALNI RAČUN */
   async function printAndArchive(){
-    // pripremi stavke i naziv stola
     let list = items
     let label = quickMode ? 'Brzo kucanje' : `Sto #${tableId}`
 
     if (!quickMode){
-      // pročitaj sveže iz baze (pre arhiviranja)
       list = await db.table('orderItems').where('orderId').equals(orderId).toArray()
     }
 
@@ -173,7 +202,7 @@ export default function POS(){
     })
     const totalNow = mapped.reduce((s,i)=> s + i.qty*i.priceEach, 0)
 
-    // arhiviraj po starom toku
+    // arhiva (po starom toku)
     if (items.length > 0){
       if (quickMode){
         const id = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
@@ -187,17 +216,30 @@ export default function POS(){
       }
     }
 
-    // otvori print prozor sa šablonom
+    // podaci o “radnji” (možeš izmeniti po želji)
+    const shop = {
+      name: 'Caffe Club M',
+      address: 'Ulica 1, 11000 Beograd',
+      mesto: 'Srbija',
+      pib: '' // ako želiš da se prikaže, unesi broj
+    }
+    const meta = {
+      title: 'PREDRAČUN',
+      datetime: formatDateTime(new Date()),
+      refLeft: label,
+      refRight: 'Operater: admin'
+    }
+
     const html = buildReceiptHTML({
-      title: 'Predračun',
-      tableLabel: label,
+      shop,
+      meta,
       items: mapped,
       total: totalNow,
-      footerNote: 'Hvala!'
+      warning: 'OVO NIJE FISKALNI RAČUN'
     })
     openPrint(html)
 
-    if (!quickMode) nav('/') // sto se oslobađa i vraćamo se na mapu
+    if (!quickMode) nav('/') // sto se oslobađa
   }
 
   function saveAndBack(){
@@ -228,7 +270,6 @@ export default function POS(){
           <div className="text-2xl font-bold">{total.toFixed(2)} RSD</div>
         </div>
 
-        {/* Dugmad — u quick modu prikazujemo SAMO štampu */}
         {quickMode ? (
           <div className="mt-3 grid grid-cols-1 gap-2">
             <Button onClick={printAndArchive} className="w-full touch-btn flex items-center justify-center gap-2">
@@ -250,7 +291,6 @@ export default function POS(){
       <Card className="order-1 md:order-2">
         <div className="text-lg font-semibold mb-3">Artikli</div>
 
-        {/* Tabovi kategorija (wrap u 2 reda) */}
         <div className="flex flex-wrap gap-2 pb-2">
           <TabBtn active={activeTab===TAB_ALL} onClick={()=>setActiveTab(TAB_ALL)} icon={<Grid2X2 size={16}/>}>Sve</TabBtn>
           <TabBtn active={activeTab===TAB_TOP} onClick={()=>setActiveTab(TAB_TOP)} icon={<Star size={16}/>}>Najčešće</TabBtn>
@@ -264,7 +304,6 @@ export default function POS(){
           })}
         </div>
 
-        {/* GRID artikala */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-2">
           {filteredProducts.map(p=>(
             <button
