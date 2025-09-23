@@ -24,10 +24,10 @@ function formatDateTime(d=new Date()){
   return d.toLocaleString('sr-RS')
 }
 
-/* === PRINT TEMPLATES (80mm) — centrirano, veći gornji logo, bez watermarka === */
+/* === PRINT TEMPLATES (80mm) — centrirano, VEĆI gornji logo, bez uplatnog mesta i PDV napomene === */
 function buildPrintCSS(){
-  // SHIFT_MM lagano gura sadržaj ulevo da se vizuelno centrirá
-  const SHIFT_MM = 2; // ~2mm ulevo: koriguj ako tvoj štampač traži finije
+  // SHIFT_MM lagano gura sadržaj ulevo da se vizuelno centrira
+  const SHIFT_MM = 2; // ~2mm ulevo
   return `
     <style>
       @page { size: 80mm auto; margin: 0; }
@@ -37,7 +37,7 @@ function buildPrintCSS(){
       .receipt {
         width: 72mm;
         margin-left: auto; margin-right: auto;
-        padding: 8px 6px 14mm 6px; /* malo duže i simetrično */
+        padding: 8px 6px 14mm 6px;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
         font-size: 12.5px; line-height: 1.28;
         position: relative;
@@ -59,7 +59,9 @@ function buildPrintCSS(){
       .unit { min-width: 64px; text-align:right; }
       .sum  { min-width: 64px; text-align:right; }
 
-      .logo-top { display:block; margin:0 auto 4px auto; width: 51mm; height:auto; } /* 1.5x */
+      /* Povećan logo ~duplo, maksimalna bezbedna širina u okviru papira */
+      .logo-top { display:block; margin:0 auto 4px auto; width: 68mm; height:auto; }
+
       .thanks { text-align:center; font-weight:700; margin-top:8px; }
       .foot-warn { margin-top: 8px; border-top:1px solid #000; padding-top:6px; text-align:center; font-weight:700; }
       .foot-note { margin-top: 4px; text-align:center; font-size:11px; opacity:.92 }
@@ -81,12 +83,11 @@ function buildReceiptHTML({
 }){
   const css = buildPrintCSS()
 
-  // HEADER
+  // HEADER (nema "Uplatno mesto")
   const header = `
     ${shop.logo ? `<img src="${shop.logo}" class="logo-top" alt="logo" />` : ''}
     <div class="center bold">${shop.name}</div>
     ${shop.place ? `<div class="center small">${shop.place}</div>` : ''}
-    ${shop.paymentPlace ? `<div class="center small">Uplatno mesto: ${shop.paymentPlace}</div>` : ''}
   `
 
   // META
@@ -117,14 +118,13 @@ function buildReceiptHTML({
     `
   }).join('')
 
-  // EKSTRAS za dužinu i profesionalni izgled
+  // EKSTRAS (izbačen PDV red)
   const extras = `
     <div class="hr"></div>
     <div class="row mono"><div>Stavki ukupno</div><div>${items.reduce((s,i)=>s+i.qty,0)}</div></div>
     <div class="row mono"><div>Način plaćanja</div><div>Gotovina</div></div>
     <div class="row mono"><div>Valuta</div><div>RSD</div></div>
     <div class="row mono"><div>Napomena</div><div>Čuvajte ovaj predračun do naplate</div></div>
-    <div class="row mono"><div>PDV</div><div>Ne obračunava se</div></div>
   `
 
   // QR (Instagram) — samo za predračun
@@ -278,12 +278,11 @@ export default function POS(){
       }
     }
 
-    // podaci o lokalu
+    // podaci o lokalu — adresa ažurirana, nema uplatnog mesta
     const shop = {
       name: 'Caffe Club M',
-      place: '15310 Ribari',
-      paymentPlace: 'CaffeClub M',
-      logo: '/racun_logo.png' // <-- stavi u public/
+      place: 'Drinska 2, 15310 Ribari',
+      logo: '/racun_logo.png' // <-- postavi fajl u /public kao racun_logo.png
     }
     const meta = {
       title: 'PREDRAČUN',
