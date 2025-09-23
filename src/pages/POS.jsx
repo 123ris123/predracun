@@ -4,10 +4,13 @@ import { db, seedIfEmpty, ensureCategoryIcons, archiveOrder } from '../store/db.
 import { Card, Button } from '../components/UI.jsx'
 import { BackBar } from '../App.jsx'
 import * as Icons from 'lucide-react'
-import { Grid2X2, Star, Printer } from 'lucide-react'
+import { Grid2X2, Star, Printer, Users } from 'lucide-react'
 
 const TAB_ALL = -1
 const TAB_TOP = -2
+
+const GUEST_ALL = 0
+const MAX_GUESTS = 5
 
 function getIconByName(name){
   return Icons[name] || Icons.Utensils
@@ -164,7 +167,7 @@ function openPrint(html){
   w.focus()
 }
 
-/* === Split modal (lokalna komponenta) === */
+/* === Split modal (ostavljen — radi kao i ranije) === */
 function SplitModal({ open, onClose, sourceItems, products, onConfirm }){
   const [q, setQ] = useState(()=> {
     const m = new Map()
@@ -250,7 +253,7 @@ function SplitModal({ open, onClose, sourceItems, products, onConfirm }){
   )
 }
 
-/* === POS === */
+/* === POS sa gostima (G1–G5 + Svi) === */
 export default function POS(){
   const [params] = useSearchParams()
   const nav = useNavigate()
@@ -265,6 +268,7 @@ export default function POS(){
   const [topIds, setTopIds] = useState([])
 
   const [splitOpen, setSplitOpen] = useState(false)
+  const [activeGuest, setActiveGuest] = useState(1) // default G1
 
   useEffect(()=>{ (async ()=>{
     await seedIfEmpty()
@@ -293,20 +297,22 @@ export default function POS(){
     }
   })() },[tableId])
 
+  /* === Dodavanje/izmena artikala — sada sa guestId === */
   async function addItem(p){
+    const g = activeGuest || 1
     if (quickMode){
       setItems(prev=>{
-        const e = prev.find(x=>x.productId===p.id)
-        if (e) return prev.map(x=> x.productId===p.id ? {...x, qty: x.qty+1, priceEach: p.price} : x)
-        return [...prev, { id: crypto.randomUUID(), productId: p.id, qty: 1, priceEach: p.price }]
+        const e = prev.find(x=>x.productId===p.id && (x.guestId||1)===g)
+        if (e) return prev.map(x=> x.id===e.id ? {...x, qty: x.qty+1, priceEach: p.price, guestId: g } : x)
+        return [...prev, { id: crypto.randomUUID(), productId: p.id, qty: 1, priceEach: p.price, guestId: g }]
       })
       return
     }
-    const existing = await db.table('orderItems').where({ orderId, productId: p.id }).first()
+    const existing = await db.table('orderItems').where({ orderId, productId: p.id, guestId: g }).first()
     if (existing){
       await db.table('orderItems').update(existing.id, { qty: existing.qty + 1 })
     } else {
-      await db.table('orderItems').add({ orderId, productId: p.id, qty: 1, priceEach: p.price })
+      await db.table('orderItems').add({ orderId, productId: p.id, qty: 1, priceEach: p.price, guestId: g })
     }
     const it = await db.table('orderItems').where('orderId').equals(orderId).toArray()
     setItems(it)
@@ -339,8 +345,58 @@ export default function POS(){
     return products.filter(p => p.categoryId === activeTab)
   }, [products, activeTab, topIds])
 
-  /* ======== Štampa celog predračuna ======== */
-  async function printAndArchive(){
+  /* === Filtriranje stavki po gostu za prikaz na levoj strani === */
+  const visibleItems = useMemo(()=>{
+    if (activeGuest === GUEST_ALL) return items
+    return items.filter(i => (i.guestId||1) === activeGuest)
+  }, [items, activeGuest])
+
+  /* === Naplata gosta (arhiva + štampa samo njegovih stavki) === */
+  async function payGuest(g){
+    // skupi stavke izabranoj gostu
+    const list = quickMode
+      ? items.filter(i => (i.guestId||1) === g)
+      : await db.table('orderItems').where('orderId').equals(orderId).toArray().then(arr => arr.filter(i => (i.guestId||1)===g))
+
+    if (list.length === 0) return
+
+    // priprema za štampu
+    const mapped = list.map(it=>{
+      const p = products.find(x=>x.id===it.productId)
+      return { name: p?.name ?? 'Artikal', qty: it.qty, priceEach: it.priceEach ?? p?.price ?? 0 }
+    })
+    const totalNow = mapped.reduce((s,i)=> s + i.qty*i.priceEach, 0)
+
+    // arhiviraj kao zaseban order i ukloni samo ove stavke
+    const tempOrderId = await db.table('orders').add({ tableId: quickMode? null : tableId, status: 'open', createdAt: new Date().toISOString() })
+    for (const it of list){
+      await db.table('orderItems').add({ orderId: tempOrderId, productId: it.productId, qty: it.qty, priceEach: it.priceEach, guestId: (it.guestId||1) })
+    }
+    await archiveOrder(tempOrderId)
+
+    if (quickMode){
+      // obriši iz lokalnog state-a
+      setItems(prev => prev.filter(i => (i.guestId||1)!==g))
+    } else {
+      // obriši iz glavnog ordera u bazi
+      for (const it of list){
+        await db.table('orderItems').delete(it.id)
+      }
+      const it = await db.table('orderItems').where('orderId').equals(orderId).toArray()
+      setItems(it)
+    }
+
+    // štampa
+    const label = quickMode ? `G${g}` : `Sto #${tableId} — G${g}`
+    const shop = { name: 'Caffe Club M', place: 'Drinska 2, 15310 Ribari', logo: '/racun_logo.png' }
+    const now = new Date()
+    const meta = { title: `PREDRAČUN (G${g})`, datetime: formatDateTime(now), number: makePrebillNo(now, `G${g}`), refLeft: label }
+    const html = buildReceiptHTML({ shop, meta, items: mapped, total: totalNow, warning: 'OVO NIJE FISKALNI RAČUN', qrUrl: 'https://www.instagram.com/caffe_club_m/#' })
+    openPrint(html)
+  }
+
+  /* ======== Štampa celog predračuna (Svi) ======== */
+  async function printAndArchiveAll(){
     let list = items
     let label = quickMode ? 'Brzo kucanje' : `Sto #${tableId}`
 
@@ -348,43 +404,31 @@ export default function POS(){
       list = await db.table('orderItems').where('orderId').equals(orderId).toArray()
     }
 
+    if (list.length === 0) return
+
     const mapped = list.map(it=>{
       const p = products.find(x=>x.id===it.productId)
       return { name: p?.name ?? 'Artikal', qty: it.qty, priceEach: it.priceEach ?? p?.price ?? 0 }
     })
     const totalNow = mapped.reduce((s,i)=> s + i.qty*i.priceEach, 0)
 
-    // arhiva
-    if (items.length > 0){
-      if (quickMode){
-        const id = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
-        for (const it of items){
-          await db.table('orderItems').add({ orderId: id, productId: it.productId, qty: it.qty, priceEach: it.priceEach })
-        }
-        await archiveOrder(id)
-        setItems([])
-      } else {
-        await archiveOrder(orderId)
+    // arhiva svega
+    if (quickMode){
+      const id = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
+      for (const it of list){
+        await db.table('orderItems').add({ orderId: id, productId: it.productId, qty: it.qty, priceEach: it.priceEach, guestId: (it.guestId||1) })
       }
+      await archiveOrder(id)
+      setItems([])
+    } else {
+      await archiveOrder(orderId)
     }
 
-    const shop = {
-      name: 'Caffe Club M',
-      place: 'Drinska 2, 15310 Ribari',
-      logo: '/racun_logo.png'
-    }
-    const meta = {
-      title: 'PREDRAČUN',
-      datetime: formatDateTime(new Date()),
-      number: makePrebillNo(new Date()),
-      refLeft: label
-    }
+    const shop = { name: 'Caffe Club M', place: 'Drinska 2, 15310 Ribari', logo: '/racun_logo.png' }
+    const meta = { title: 'PREDRAČUN', datetime: formatDateTime(new Date()), number: makePrebillNo(new Date()), refLeft: label }
 
     const html = buildReceiptHTML({
-      shop,
-      meta,
-      items: mapped,
-      total: totalNow,
+      shop, meta, items: mapped, total: totalNow,
       warning: 'OVO NIJE FISKALNI RAČUN',
       qrUrl: 'https://www.instagram.com/caffe_club_m/#'
     })
@@ -393,16 +437,13 @@ export default function POS(){
     if (!quickMode) nav('/')
   }
 
-  /* ======== Štampa dela (split) – samo selektovane stavke ======== */
-  async function handleSplitConfirm(picked){ 
-    // picked: [{ itemId, productId, qty, priceEach }]
+  /* ======== Split (deo) – ostavljeno iz prethodne verzije ======== */
+  async function handleSplitConfirm(picked){
     if (!picked || picked.length===0){ setSplitOpen(false); return }
 
-    // Pripremi mapu qty za smanjenje
     const reduceById = new Map()
     picked.forEach(p => reduceById.set(p.itemId, p.qty))
 
-    // Izračun i priprema linija za print
     const mapped = picked.map(p => {
       const prod = products.find(x=>x.id===p.productId)
       const name = prod?.name ?? 'Artikal'
@@ -410,7 +451,6 @@ export default function POS(){
     })
     const totalNow = mapped.reduce((s,i)=> s + i.qty*i.priceEach, 0)
 
-    // Arhiviraj kao poseban order, ali ne zatvaraj sto (ostaje otvoren)
     let tempOrderId
     if (quickMode){
       tempOrderId = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
@@ -418,7 +458,6 @@ export default function POS(){
         await db.table('orderItems').add({ orderId: tempOrderId, productId: p.productId, qty: p.qty, priceEach: p.priceEach })
       }
       await archiveOrder(tempOrderId)
-      // smanji u lokalnom stanju
       setItems(prev=>{
         return prev.map(it=>{
           const dec = reduceById.get(it.id) || 0
@@ -432,7 +471,6 @@ export default function POS(){
         await db.table('orderItems').add({ orderId: tempOrderId, productId: p.productId, qty: p.qty, priceEach: p.priceEach })
       }
       await archiveOrder(tempOrderId)
-      // smanji na glavnom orderu
       for (const p of picked){
         const row = await db.table('orderItems').get(p.itemId)
         if (!row) continue
@@ -447,28 +485,11 @@ export default function POS(){
       setItems(it)
     }
 
-    // Štampa samo izabrani deo
     const label = quickMode ? 'Brzo kucanje — DEO' : `Sto #${tableId} — DEO`
-    const shop = {
-      name: 'Caffe Club M',
-      place: 'Drinska 2, 15310 Ribari',
-      logo: '/racun_logo.png'
-    }
+    const shop = { name: 'Caffe Club M', place: 'Drinska 2, 15310 Ribari', logo: '/racun_logo.png' }
     const now = new Date()
-    const meta = {
-      title: 'PREDRAČUN (DEO)',
-      datetime: formatDateTime(now),
-      number: makePrebillNo(now, 'DEO'),
-      refLeft: label
-    }
-    const html = buildReceiptHTML({
-      shop,
-      meta,
-      items: mapped,
-      total: totalNow,
-      warning: 'OVO NIJE FISKALNI RAČUN',
-      qrUrl: 'https://www.instagram.com/caffe_club_m/#'
-    })
+    const meta = { title: 'PREDRAČUN (DEO)', datetime: formatDateTime(now), number: makePrebillNo(now, 'DEO'), refLeft: label }
+    const html = buildReceiptHTML({ shop, meta, items: mapped, total: totalNow, warning: 'OVO NIJE FISKALNI RAČUN', qrUrl: 'https://www.instagram.com/caffe_club_m/#' })
     openPrint(html)
 
     setSplitOpen(false)
@@ -479,6 +500,17 @@ export default function POS(){
     setItems([])
   }
 
+  /* --- pomoćne agregacije po gostima (za dugmad naplate) --- */
+  const qtyByGuest = useMemo(()=>{
+    const m = new Map()
+    for (let g=1; g<=MAX_GUESTS; g++) m.set(g, 0)
+    for (const i of items){
+      const g = i.guestId || 1
+      m.set(g, (m.get(g)||0) + i.qty)
+    }
+    return m
+  }, [items])
+
   return (
     <div className="max-w-7xl mx-auto p-4 grid md:grid-cols-2 gap-4">
       <div className="md:col-span-2">
@@ -486,28 +518,55 @@ export default function POS(){
       </div>
 
       <Card className="order-2 md:order-1">
-        <div className="text-lg font-semibold mb-3">
-          {quickMode ? 'Brzo kucanje' : `Sto #${tableId}`}
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-lg font-semibold">
+            {quickMode ? 'Brzo kucanje' : `Sto #${tableId}`}
+          </div>
+          {/* Guest switcher */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm opacity-80 hidden sm:inline-flex items-center gap-1"><Users size={16}/>Gosti:</span>
+            <GuestBtn active={activeGuest===GUEST_ALL} onClick={()=>setActiveGuest(GUEST_ALL)}>Svi</GuestBtn>
+            {Array.from({length: MAX_GUESTS}).map((_,idx)=>{
+              const g = idx+1
+              const count = qtyByGuest.get(g) || 0
+              return (
+                <GuestBtn key={g} active={activeGuest===g} onClick={()=>setActiveGuest(g)}>
+                  G{g}{count>0 ? ` (${count})` : ''}
+                </GuestBtn>
+              )
+            })}
+          </div>
         </div>
 
         <div className="space-y-2 max-h-[60vh] overflow-auto pr-1 no-scrollbar">
-          {items.map(i=> (
+          {visibleItems.map(i=> (
             <ItemRow key={i.id} item={i} onDec={()=>changeQty(i,-1)} onInc={()=>changeQty(i,1)} products={products} />
           ))}
-          {items.length===0 && <div className="opacity-60">Nema stavki. Dodajte sa desne strane.</div>}
+          {visibleItems.length===0 && <div className="opacity-60">Nema stavki za izabranog gosta. Dodajte sa desne strane.</div>}
         </div>
 
         <div className="mt-4 border-t border-neutral-200/70 dark:border-neutral-800 pt-3 flex items-center justify-between">
-          <div className="text-lg">Ukupno:</div>
+          <div className="text-lg">Ukupno (svi):</div>
           <div className="text-2xl font-bold">{total.toFixed(2)} RSD</div>
         </div>
 
-        {/* Dugmad */}
+        {/* Dugmad naplate */}
         {quickMode ? (
           <div className="mt-3 grid grid-cols-1 gap-2">
-            <Button onClick={printAndArchive} className="w-full touch-btn flex items-center justify-center gap-2">
-              <Printer size={18}/> Štampaj predračun
+            <Button onClick={printAndArchiveAll} className="w-full touch-btn flex items-center justify-center gap-2">
+              <Printer size={18}/> Štampaj sve
             </Button>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              {Array.from({length: MAX_GUESTS}).map((_,idx)=>{
+                const g = idx+1
+                const disabled = (qtyByGuest.get(g)||0)===0
+                return (
+                  <Button key={g} onClick={()=>payGuest(g)} disabled={disabled} className="w-full bg-amber-600 hover:bg-amber-700 touch-btn">
+                    Naplati G{g}
+                  </Button>
+                )
+              })}
+            </div>
             {items.length>0 && (
               <Button onClick={()=>setSplitOpen(true)} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn">
                 Podeli račun (deo)
@@ -515,14 +574,24 @@ export default function POS(){
             )}
           </div>
         ) : (
-          <div className="mt-3 grid grid-cols-3 gap-2">
-            <Button onClick={printAndArchive} className="w-full touch-btn flex items-center justify-center gap-2 col-span-2">
-              <Printer size={18}/> Štampaj predračun
+          <div className="mt-3 grid gap-2"
+               style={{gridTemplateColumns:'repeat(6, minmax(0,1fr))'}}>
+            <Button onClick={printAndArchiveAll} className="col-span-3 md:col-span-3 touch-btn flex items-center justify-center gap-2">
+              <Printer size={18}/> Štampaj sve
             </Button>
-            <Button onClick={()=>setSplitOpen(true)} className="w-full bg-amber-600 hover:bg-amber-700 touch-btn">
-              Podeli račun
+            {Array.from({length: MAX_GUESTS}).map((_,idx)=>{
+              const g = idx+1
+              const disabled = (qtyByGuest.get(g)||0)===0
+              return (
+                <Button key={g} onClick={()=>payGuest(g)} disabled={disabled} className="touch-btn bg-amber-600 hover:bg-amber-700">
+                  G{g}
+                </Button>
+              )
+            })}
+            <Button onClick={()=>setSplitOpen(true)} className="col-span-6 bg-neutral-700 hover:bg-neutral-600 touch-btn">
+              Podeli račun (deo)
             </Button>
-            <Button onClick={saveAndBack} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn col-span-3">
+            <Button onClick={saveAndBack} className="col-span-6 bg-neutral-700 hover:bg-neutral-600 touch-btn">
               Sačuvaj / Nazad
             </Button>
           </div>
@@ -532,6 +601,7 @@ export default function POS(){
       <Card className="order-1 md:order-2">
         <div className="text-lg font-semibold mb-3">Artikli</div>
 
+        {/* Tabovi kategorija */}
         <div className="flex flex-wrap gap-2 pb-2">
           <TabBtn active={activeTab===TAB_ALL} onClick={()=>setActiveTab(TAB_ALL)} icon={<Grid2X2 size={16}/>}>Sve</TabBtn>
           <TabBtn active={activeTab===TAB_TOP} onClick={()=>setActiveTab(TAB_TOP)} icon={<Star size={16}/>}>Najčešće</TabBtn>
@@ -545,6 +615,7 @@ export default function POS(){
           })}
         </div>
 
+        {/* GRID artikala */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-2">
           {filteredProducts.map(p=>(
             <button
@@ -554,6 +625,7 @@ export default function POS(){
             >
               <div className="font-semibold text-[15px]">{p.name}</div>
               <div className="text-sm opacity-70 mt-1">{p.price.toFixed(2)} RSD</div>
+              <div className="mt-1 text-[11px] opacity-70">→ upis za <b>G{activeGuest||1}</b></div>
             </button>
           ))}
           {filteredProducts.length===0 && (
@@ -571,6 +643,22 @@ export default function POS(){
         onConfirm={handleSplitConfirm}
       />
     </div>
+  )
+}
+
+/* ---- UI helpers ---- */
+function GuestBtn({active, onClick, children}){
+  return (
+    <button
+      onClick={onClick}
+      className={`px-2.5 py-1.5 rounded-lg text-sm border transition touch-btn
+        ${active
+          ? 'bg-brand/20 border-brand text-neutral-900 dark:text-white'
+          : 'bg-[var(--surface)] border-neutral-200/80 hover:border-brand dark:bg-neutral-900 dark:border-neutral-800'
+        }`}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -593,11 +681,12 @@ function ItemRow({item, onInc, onDec, products}){
   const p = products.find(x=>x.id===item.productId)
   const name = p?.name ?? 'Artikal'
   const price = item.priceEach ?? p?.price ?? 0
+  const g = item.guestId || 1
   return (
     <div className="flex items-center justify-between border border-neutral-200/80 dark:border-neutral-800 rounded-2xl px-3 py-2 transition bg-[var(--surface)]">
       <div>
         <div className="font-medium">{name}</div>
-        <div className="text-xs opacity-70">{price.toFixed(2)} RSD</div>
+        <div className="text-xs opacity-70">{price.toFixed(2)} RSD &middot; <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700">G{g}</span></div>
       </div>
       <div className="flex items-center gap-2">
         <button onClick={onDec} className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-200/80 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:border-neutral-800 touch-btn transition">−</button>
