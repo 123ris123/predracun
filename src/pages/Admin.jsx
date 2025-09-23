@@ -392,21 +392,17 @@ function LayoutTab({ tables, onChange }){
       <Card>
         <div className="text-lg font-semibold mb-3">Raspored — isto kao na mapi stolova (pixel perfect)</div>
 
-        {/* Identicna pozadina kao TableMap */}
         <div className="relative rounded-2xl overflow-hidden" style={{height: 'calc(100svh - 200px)'}}>
           <div className="tables-area">
-            {/* koristimo istu <img> podlogu kao TableMap (contain + left) */}
             <img src="/tables-bg.gif" className="tables-img" alt="Map" />
             <div className="tables-area-overlay" />
           </div>
 
-        {/* Stage za rad */}
           <div
             ref={stageRef}
             className="tables-stage select-none"
             onClick={handleGridClick}
           >
-            {/* Stolovi */}
             <div className="relative w-full h-full">
               {tables.map(t=>{
                 let xpct = typeof t.xpct === 'number' ? t.xpct : (typeof t.x==='number' ? Math.min(1, Math.max(0, (t.x+0.5)/24)) : 0.05)
@@ -441,7 +437,7 @@ function LayoutTab({ tables, onChange }){
   )
 }
 
-/* -------------------- RAČUNI (arhiva predračuna) — pretraga + storniranje + paginacija --------------------- */
+/* -------------------- RAČUNI (arhiva predračuna) — filteri + storno/brisanje + paginacija --------------------- */
 function ReceiptsTab(){
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -461,18 +457,17 @@ function ReceiptsTab(){
   useEffect(()=>{ (async ()=>{
     const t = await db.table('posTables').toArray()
     setTables(t)
-    await runSearch(true) // inicijalno: bez filtera, prikaži sve najnovije
+    await runSearch(true)
   })() },[])
 
   useEffect(()=>{
-    // resetuj na prvu stranu kad se promene filteri
     setPage(1)
   }, [from, to, tableId, q, min, max, showVoided, pageSize])
 
-  async function runSearch(initial=false){
-    // čitaj sve arhivirane (najnoviji prvi)
-    // ispravno sortiranje: orderBy('createdAt').reverse()
-    let list = await db.table('archivedOrders').orderBy('createdAt').reverse().toArray()
+  async function runSearch(){
+    // robustno: uzmi sve pa sortiraj po createdAt lokalno (bez zahteva za indeksom)
+    let list = await db.table('archivedOrders').toArray()
+    list.sort((a,b)=> (b.createdAt || '').localeCompare(a.createdAt || ''))
 
     // filter: datumi
     if (from){
@@ -481,7 +476,7 @@ function ReceiptsTab(){
     }
     if (to){
       const t = new Date(to)
-      t.setDate(t.getDate()+1) // inclusive
+      t.setDate(t.getDate()+1)
       const tIso = t.toISOString()
       list = list.filter(o => o.createdAt < tIso)
     }
@@ -530,7 +525,7 @@ function ReceiptsTab(){
     await runSearch()
   }
 
-  // paginacija: prikaži isečak
+  // paginacija
   const totalRows = rows.length
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize))
   const pageSafe = Math.min(Math.max(1, page), totalPages)
@@ -542,7 +537,6 @@ function ReceiptsTab(){
     <Card>
       <div className="text-lg font-semibold mb-3">Računi (arhiva predračuna)</div>
 
-      {/* Filter traka */}
       <div className="grid md:grid-cols-7 gap-2">
         <input type="date" value={from} onChange={e=>setFrom(e.target.value)} className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900" />
         <input type="date" value={to} onChange={e=>setTo(e.target.value)} className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900" />
@@ -575,7 +569,6 @@ function ReceiptsTab(){
         </div>
       </div>
 
-      {/* Lista sa paginacijom */}
       <div className="mt-4 space-y-2 max-h-[60vh] overflow-auto pr-1">
         {pageRows.map(r=>{
           const dateStr = r.date.toLocaleString()
@@ -606,7 +599,6 @@ function ReceiptsTab(){
         {pageRows.length===0 && <div className="opacity-70">Nema rezultata za dati filter.</div>}
       </div>
 
-      {/* Kontrole paginacije */}
       <div className="mt-3 flex items-center justify-between text-sm">
         <div>Ukupno: <b>{totalRows}</b>, Strana <b>{pageSafe}</b>/<b>{totalPages}</b></div>
         <div className="flex items-center gap-2">

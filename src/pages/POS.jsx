@@ -13,18 +13,29 @@ function getIconByName(name){
   return Icons[name] || Icons.Utensils
 }
 
-/* === PRINT TEMPLATES (80mm) — “pravi račun”, bez QR i uz napomenu === */
+/* === PRINT TEMPLATES (80mm) — profi izgled, bez QR, sa logoom === */
 function buildPrintCSS(){
   return `
     <style>
       @page { size: 80mm auto; margin: 0; }
       html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; }
       * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .receipt { width: 72mm; margin: 0 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.25; padding: 6px 4px; }
+      .receipt {
+        width: 72mm; margin: 0 auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+        font-size: 12px; line-height: 1.25; padding: 8px 4px 12mm; /* malo duža traka */
+        position: relative;
+        background-image: url('/racun_logo.png');
+        background-repeat: no-repeat;
+        background-position: center 85%;
+        background-size: 36mm auto;
+        opacity: 0.999; /* hack za neke drajvere */
+      }
       .center { text-align: center; }
       .left { text-align: left; }
       .row { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
-      .hr { border-top:1px dashed #000; margin:6px 0; }
+      .hr { border-top:1px dashed #000; margin:7px 0; }
+      .divider { text-align:center; letter-spacing:1px; margin:6px 0; }
       .muted { opacity:.9 }
       .small { font-size: 11px; }
       .bold { font-weight: 700; }
@@ -33,28 +44,30 @@ function buildPrintCSS(){
       .name { flex:1; padding-right:6px; word-break: break-word; }
       .unit { min-width: 62px; text-align:right; }
       .sum { min-width: 62px; text-align:right; }
-      .mt2 { margin-top: 6px; } .mt1 { margin-top: 3px; } .mb2 { margin-bottom: 6px; }
+      .logo-top { display:block; margin:0 auto 2px auto; width: 34mm; height:auto; }
+      .watermark-note { text-align:center; font-size:10px; opacity:.9; margin-top:6px }
       .foot-warn { margin-top: 8px; border-top:1px solid #000; padding-top:6px; text-align:center; font-weight:700; }
+      .tail { height: 8mm; } /* kratki feed za cutter */
     </style>
   `
 }
 
 function formatDateTime(d=new Date()){
-  // Lokalno sr-RS formatisanje: npr. 23.09.2025. 14:37
   return d.toLocaleString('sr-RS')
 }
 
 function buildReceiptHTML({ shop, meta, items=[], total=0, warning='OVO NIJE FISKALNI RAČUN' }){
   const css = buildPrintCSS()
   const header = `
+    ${shop.logo ? `<img src="${shop.logo}" class="logo-top" alt="logo" />` : ''}
     <div class="center bold">${shop.name}</div>
-    ${shop.address ? `<div class="center small">${shop.address}</div>` : ''}
-    ${shop.pib ? `<div class="center small">PIB: ${shop.pib}</div>` : ''}
-    ${shop.mesto ? `<div class="center small">${shop.mesto}</div>` : ''}
+    ${shop.place ? `<div class="center small">${shop.place}</div>` : ''}
+    ${shop.paymentPlace ? `<div class="center small">Uplatno mesto: ${shop.paymentPlace}</div>` : ''}
   `
   const metaBlock = `
-    <div class="row small mono"><div>${meta.title}</div><div>${meta.datetime}</div></div>
-    <div class="row small mono"><div>${meta.refLeft}</div><div>${meta.refRight}</div></div>
+    <div class="divider small">*** ${meta.title} ***</div>
+    <div class="row small mono"><div>Datum/čas</div><div>${meta.datetime}</div></div>
+    ${meta.refLeft ? `<div class="row small mono"><div>Ref</div><div>${meta.refLeft}</div></div>` : ''}
   `
   const headCols = `
     <div class="row small muted mono">
@@ -75,6 +88,14 @@ function buildReceiptHTML({ shop, meta, items=[], total=0, warning='OVO NIJE FIS
     `
   }).join('')
 
+  const extras = `
+    <div class="hr"></div>
+    <div class="row mono"><div>Stavki ukupno</div><div>${items.reduce((s,i)=>s+i.qty,0)}</div></div>
+    <div class="row mono"><div>Način plaćanja</div><div>Gotovina</div></div>
+    <div class="row mono"><div>Valuta</div><div>RSD</div></div>
+    <div class="watermark-note">Hvala na poseti — CaffeClub M</div>
+  `
+
   return `
     <!doctype html><html><head><meta charset="utf-8">${css}</head>
     <body>
@@ -87,9 +108,11 @@ function buildReceiptHTML({ shop, meta, items=[], total=0, warning='OVO NIJE FIS
         ${lines || '<div class="small muted">— Nema stavki —</div>'}
         <div class="hr"></div>
         <div class="row bold mono"><div>UKUPNO</div><div>${total.toFixed(2)} RSD</div></div>
+        ${extras}
         <div class="foot-warn small">${warning}</div>
+        <div class="tail"></div>
       </div>
-      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 50) };</script>
+      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 80) };</script>
     </body></html>
   `
 }
@@ -187,7 +210,6 @@ export default function POS(){
     return products.filter(p => p.categoryId === activeTab)
   }, [products, activeTab, topIds])
 
-  /* Štampa: pravi izgled, bez QR; dno: OVO NIJE FISKALNI RAČUN */
   async function printAndArchive(){
     let list = items
     let label = quickMode ? 'Brzo kucanje' : `Sto #${tableId}`
@@ -202,7 +224,7 @@ export default function POS(){
     })
     const totalNow = mapped.reduce((s,i)=> s + i.qty*i.priceEach, 0)
 
-    // arhiva (po starom toku)
+    // arhiva
     if (items.length > 0){
       if (quickMode){
         const id = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
@@ -216,18 +238,17 @@ export default function POS(){
       }
     }
 
-    // podaci o “radnji” (možeš izmeniti po želji)
+    // podaci o lokalu
     const shop = {
       name: 'Caffe Club M',
-      address: 'Ulica 1, 11000 Beograd',
-      mesto: 'Srbija',
-      pib: '' // ako želiš da se prikaže, unesi broj
+      place: '15310 Ribari',
+      paymentPlace: 'CaffeClub M',
+      logo: '/racun_logo.png' // <-- postavi ovaj fajl u public/
     }
     const meta = {
       title: 'PREDRAČUN',
       datetime: formatDateTime(new Date()),
-      refLeft: label,
-      refRight: 'Operater: admin'
+      refLeft: label
     }
 
     const html = buildReceiptHTML({
@@ -239,7 +260,7 @@ export default function POS(){
     })
     openPrint(html)
 
-    if (!quickMode) nav('/') // sto se oslobađa
+    if (!quickMode) nav('/')
   }
 
   function saveAndBack(){

@@ -4,25 +4,31 @@ import { Card, Button } from '../components/UI.jsx'
 import { format } from 'date-fns'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
-/* === PRINT TEMPLATES (80mm) — preseci sa listom artikala === */
 function buildPrintCSS(){
   return `
     <style>
       @page { size: 80mm auto; margin: 0; }
       html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; }
       * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .receipt { width: 72mm; margin: 0 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.25; padding: 6px 4px; }
-      .center { text-align: center; }
-      .row { display:flex; justify-content:space-between; gap:8px; }
-      .hr { border-top:1px dashed #000; margin:6px 0; }
-      .small { font-size: 11px; }
-      .muted { opacity:.9 }
+      .receipt {
+        width: 72mm; margin: 0 auto; padding: 8px 4px 10mm;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+        font-size: 12px; line-height: 1.25;
+        background-image: url('/racun_logo.png');
+        background-repeat: no-repeat;
+        background-position: center 92%;
+        background-size: 30mm auto;
+      }
+      .center { text-align:center }
+      .row { display:flex; justify-content:space-between; gap:8px }
+      .hr { border-top:1px dashed #000; margin:7px 0 }
+      .small { font-size:11px }
       .bold { font-weight:700 }
       .mono { font-variant-numeric: tabular-nums; }
-      .name { flex:1; padding-right:6px; }
-      .qty { min-width: 36px; text-align:right; }
-      .amt { min-width: 62px; text-align:right; }
-      .mt2 { margin-top:6px } .mb2 { margin-bottom:6px }
+      .name { flex:1; padding-right:6px }
+      .unit { min-width: 62px; text-align:right }
+      .amt  { min-width: 62px; text-align:right }
+      .logo-top { display:block; margin:0 auto 2px auto; width:32mm; height:auto }
     </style>
   `
 }
@@ -32,6 +38,7 @@ function openPrint(html){
   w.document.close()
   w.focus()
 }
+function formatDateTime(d=new Date()){ return d.toLocaleString('sr-RS') }
 
 function groupByDay(rows){
   const map = new Map()
@@ -45,7 +52,6 @@ function groupByDay(rows){
   return Array.from(map.values()).sort((a,b)=>a.day.localeCompare(b.day))
 }
 
-/* nova pomoćna: grupisanje artikala */
 function groupItems(rows){
   const m = new Map()
   for (const r of rows){
@@ -67,11 +73,9 @@ export default function Reports(){
   },[])
 
   async function reload(){
-    // sales = arhiva svih štampanih predračuna (stavke)
     const s = await db.table('sales').toArray()
     setSales(s)
 
-    // trenutno otkucano = sumiraj OPEN orders + njihove stavke
     const ordersOpen = await db.table('orders').where('status').equals('open').toArray()
     const items = await db.table('orderItems').toArray()
     const byOrder = new Map()
@@ -100,63 +104,68 @@ export default function Reports(){
   const last7 = byDay.slice(-7)
   const sumLast7 = last7.reduce((s,d)=>s+d.total,0)
 
+  function renderGroupedRows(grouped){
+    return grouped.map(it => {
+      const avg = it.qty ? (it.amt / it.qty) : 0
+      return `
+        <div class="row mono">
+          <div class="name">${it.name}</div>
+          <div class="unit">${it.qty}× ${avg.toFixed(2)}</div>
+          <div class="amt">${it.amt.toFixed(2)} RSD</div>
+        </div>
+      `
+    }).join('')
+  }
+
   function printDay(d){
-    // sve stavke tog dana
     const itemsOfDay = sales.filter(s => s.day === d.day)
     const grouped = groupItems(itemsOfDay)
     const css = buildPrintCSS()
-    const rows = grouped.map(it => `
-      <div class="row mono">
-        <div class="name">${it.name}</div>
-        <div class="qty">${it.qty}</div>
-        <div class="amt">${it.amt.toFixed(2)} RSD</div>
-      </div>
-    `).join('')
+    const rows = renderGroupedRows(grouped)
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
       <body><div class="receipt">
+        <img src="/racun_logo.png" class="logo-top" alt="logo" />
         <div class="center bold">PRESEK ZA DAN</div>
-        <div class="center small muted">${d.day}</div>
+        <div class="center small">Datum preseka: ${d.day}</div>
+        <div class="center small">Datum štampe: ${formatDateTime(new Date())}</div>
         <div class="hr"></div>
         <div class="row mono"><div>Ukupan promet</div><div class="bold">${d.total.toFixed(2)} RSD</div></div>
         <div class="row mono"><div>Ukupno artikala</div><div class="bold">${d.count}</div></div>
         <div class="hr"></div>
         <div class="center small bold">ARTIKLI</div>
-        ${rows || '<div class="small muted">Nema podataka o artiklima.</div>'}
+        <div class="row small mono" style="opacity:.9"><div class="name">Artikal</div><div class="unit">Kol × Cena</div><div class="amt">Ukupno</div></div>
+        ${rows || '<div class="small" style="opacity:.8">Nema podataka o artiklima.</div>'}
       </div>
-      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 50) };</script>
+      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 80) };</script>
       </body></html>
     `
     openPrint(html)
   }
 
   function printWeek(){
-    // poslednjih 7 dana — uzmi sve stavke iz tih dana i grupiši
     const daySet = new Set(last7.map(d => d.day))
     const itemsOfWeek = sales.filter(s => daySet.has(s.day))
     const grouped = groupItems(itemsOfWeek)
     const css = buildPrintCSS()
     const rowsDays = last7.map(d=>`<div class="row mono"><div>${d.day}</div><div>${d.total.toFixed(2)} RSD</div></div>`).join('')
-    const rowsItems = grouped.map(it => `
-      <div class="row mono">
-        <div class="name">${it.name}</div>
-        <div class="qty">${it.qty}</div>
-        <div class="amt">${it.amt.toFixed(2)} RSD</div>
-      </div>
-    `).join('')
+    const rowsItems = renderGroupedRows(grouped)
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
       <body><div class="receipt">
+        <img src="/racun_logo.png" class="logo-top" alt="logo" />
         <div class="center bold">PRESEK POSLEDNJIH 7 DANA</div>
+        <div class="center small">Datum štampe: ${formatDateTime(new Date())}</div>
         <div class="hr"></div>
-        ${rowsDays || '<div class="small muted">Nema podataka.</div>'}
+        ${rowsDays || '<div class="small" style="opacity:.8">Nema podataka.</div>'}
         <div class="hr"></div>
         <div class="row mono"><div class="bold">Ukupno 7 dana</div><div class="bold">${sumLast7.toFixed(2)} RSD</div></div>
         <div class="hr"></div>
         <div class="center small bold">ARTIKLI (UKUPNO)</div>
-        ${rowsItems || '<div class="small muted">Nema podataka o artiklima.</div>'}
+        <div class="row small mono" style="opacity:.9"><div class="name">Artikal</div><div class="unit">Kol × Cena</div><div class="amt">Ukupno</div></div>
+        ${rowsItems || '<div class="small" style="opacity:.8">Nema podataka o artiklima.</div>'}
       </div>
-      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 50) };</script>
+      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 80) };</script>
       </body></html>
     `
     openPrint(html)
