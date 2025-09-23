@@ -437,7 +437,7 @@ function LayoutTab({ tables, onChange }){
   )
 }
 
-/* -------------------- RAČUNI (arhiva predračuna) — filteri + storno/brisanje + paginacija --------------------- */
+/* -------------------- RAČUNI — bezbedno detektovanje tabela + fallback iz `sales` --------------------- */
 function ReceiptsTab(){
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -449,6 +449,7 @@ function ReceiptsTab(){
 
   const [rows, setRows] = useState([])
   const [tables, setTables] = useState([])
+  const [mode, setMode] = useState('auto') // 'archived' | 'salesSynth'
 
   // paginacija
   const [page, setPage] = useState(1)
@@ -457,69 +458,189 @@ function ReceiptsTab(){
   useEffect(()=>{ (async ()=>{
     const t = await db.table('posTables').toArray()
     setTables(t)
-    await runSearch(true)
+    await runSearch()
   })() },[])
 
   useEffect(()=>{
     setPage(1)
   }, [from, to, tableId, q, min, max, showVoided, pageSize])
 
+  /* --- helpers: detekcija tabela --- */
+  function hasTable(name){
+    try {
+      return !!db.tables.find(t => t.name === name)
+    } catch { return false }
+  }
+
+  function dayToDate(dStr){
+    // dStr "YYYY-MM-DD" -> Date u lokalnoj zoni (00:00)
+    if (!dStr) return new Date(0)
+    const [y,m,d] = dStr.split('-').map(n=>parseInt(n,10))
+    return new Date(y, (m||1)-1, d||1)
+  }
+  function inDayRange(day, fromStr, toStr){
+    if (!fromStr && !toStr) return true
+    const d = dayToDate(day)
+    if (fromStr && d < dayToDate(fromStr)) return false
+    if (toStr && d > dayToDate(toStr)) return false
+    return true
+  }
+  function saleGroupKey(s){
+    return s?.receiptId ?? s?.orderId ?? s?.batchId ?? `${s?.day || '0000-00-00'}~${(s?.tableId ?? 'quick')}`
+  }
+
   async function runSearch(){
-    // robustno: uzmi sve pa sortiraj po createdAt lokalno (bez zahteva za indeksom)
-    let list = await db.table('archivedOrders').toArray()
-    list.sort((a,b)=> (b.createdAt || '').localeCompare(a.createdAt || ''))
+    // Proveri da li arhiva uopšte postoji u šemi
+    const hasArchivedOrders = hasTable('archivedOrders')
+    const hasArchivedItems  = hasTable('archivedItems')
+
+    if (!hasArchivedOrders){
+      // Direktno sales fallback — izbegava InvalidTableError
+      await runFromSales()
+      return
+    }
+
+    // Probaj da čitaš archivedOrders (može da vrati 0 redova — to je ok)
+    let archived = await db.table('archivedOrders').toArray()
+    archived.sort((a,b)=> (b.createdAt || '').localeCompare(a.createdAt || ''))
+
+    if (archived.length === 0){
+      await runFromSales()
+      return
+    }
+
+    // === Normalni (archived) režim ===
+    setMode('archived')
 
     // filter: datumi
     if (from){
       const f = new Date(from).toISOString()
-      list = list.filter(o => o.createdAt >= f)
+      archived = archived.filter(o => (o.createdAt || '') >= f)
     }
     if (to){
-      const t = new Date(to)
-      t.setDate(t.getDate()+1)
+      const t = new Date(to); t.setDate(t.getDate()+1)
       const tIso = t.toISOString()
-      list = list.filter(o => o.createdAt < tIso)
+      archived = archived.filter(o => (o.createdAt || '') < tIso)
     }
     if (tableId){
       const tid = Number(tableId)
-      list = list.filter(o => (o.tableId ?? 0) === tid)
+      archived = archived.filter(o => (o.tableId ?? 0) === tid)
     }
     if (!showVoided){
-      list = list.filter(o => !o.voided)
+      archived = archived.filter(o => !o.voided)
     }
 
-    // učitaj stavke i total/tekst
+    // učitaj stavke i total/tekst (ako nema archivedItems tabele, preskoči i stavi total 0)
     const out = []
-    for (const o of list){
-      const its = await db.table('archivedItems').where('orderId').equals(o.id).toArray()
+    for (const o of archived){
+      let its = []
+      if (hasArchivedItems){
+        its = await db.table('archivedItems').where('orderId').equals(o.id).toArray()
+      }
       const total = its.reduce((s,i)=> s + (i.qty * (i.priceEach ?? 0)), 0)
       const text = its.map(i => `${i.name ?? ''} x${i.qty}`).join(', ')
       out.push({
         ...o, items: its, total, text,
-        date: new Date(o.createdAt)
+        date: new Date(o.createdAt || Date.now())
       })
     }
 
     // filter: q/min/max
     const qq = q.trim().toLowerCase()
     let f = out
-    if (qq) f = f.filter(r => r.text.toLowerCase().includes(qq))
+    if (qq) f = f.filter(r => (r.text || '').toLowerCase().includes(qq))
     const minN = min ? Number(min) : null
     const maxN = max ? Number(max) : null
     if (minN != null) f = f.filter(r => r.total >= minN)
     if (maxN != null) f = f.filter(r => r.total <= maxN)
 
+    // najnovije prvo
+    f.sort((a,b)=> (b.createdAt || '').localeCompare(a.createdAt || ''))
+
     setRows(f)
   }
 
+  async function runFromSales(){
+    setMode('salesSynth')
+    if (!hasTable('sales')){
+      setRows([]) // nema ni sales tabele
+      return
+    }
+    const sales = await db.table('sales').toArray()
+    if (sales.length === 0){ setRows([]); return }
+
+    const groups = new Map()
+    for (const s of sales){
+      const key = saleGroupKey(s)
+      const day = s?.day || (s?.createdAt ? s.createdAt.substring(0,10) : '0000-00-00')
+      const g = groups.get(key) || {
+        id: key,
+        _day: day,
+        createdAt: s?.createdAt || `${day}T12:00:00.000Z`,
+        tableId: s?.tableId ?? null,
+        items: [],
+      }
+      g.items.push({
+        name: s?.name || s?.productName || 'Artikal',
+        qty: s?.qty || 0,
+        priceEach: s?.priceEach || 0,
+      })
+      groups.set(key, g)
+    }
+
+    let out = []
+    for (const g of groups.values()){
+      const total = g.items.reduce((sum,i)=> sum + i.qty*(i.priceEach||0), 0)
+      const text = g.items.map(i => `${i.name} x${i.qty}`).join(', ')
+      out.push({
+        id: g.id,
+        createdAt: g.createdAt,
+        date: new Date(g.createdAt),
+        _day: g._day,
+        tableId: g.tableId,
+        items: g.items,
+        total, text,
+      })
+    }
+
+    // FILTERI
+    if (from || to){ out = out.filter(o => inDayRange(o._day, from, to)) }
+    if (tableId){ const tid = Number(tableId); out = out.filter(o => (o.tableId ?? 0) === tid) }
+    const qq = q.trim().toLowerCase()
+    if (qq) out = out.filter(r => (r.text || '').toLowerCase().includes(qq))
+    const minN = min ? Number(min) : null
+    const maxN = max ? Number(max) : null
+    if (minN != null) out = out.filter(r => r.total >= minN)
+    if (maxN != null) out = out.filter(r => r.total <= maxN)
+
+    // najnovije prvo po danu pa createdAt
+    out.sort((a,b)=> (b._day || '').localeCompare(a._day || '') || (b.createdAt || '').localeCompare(a.createdAt || ''))
+
+    setRows(out)
+  }
+
   async function removeReceipt(id){
-    if (!confirm('Obrisati ovaj račun iz arhive? (biće uklonjen i iz preseka)')) return
-    await db.table('archivedItems').where('orderId').equals(id).delete()
-    await db.table('archivedOrders').delete(id)
+    if (!confirm('Obrisati ovaj račun?')) return
+
+    if (mode === 'archived' && db.tables.find(t=>t.name==='archivedOrders')){
+      if (db.tables.find(t=>t.name==='archivedItems')){
+        await db.table('archivedItems').where('orderId').equals(id).delete()
+      }
+      await db.table('archivedOrders').delete(id)
+    } else if (db.tables.find(t=>t.name==='sales')){
+      // salesSynth: obriši sve sales zapise te grupe
+      const all = await db.table('sales').toArray()
+      const toDel = all.filter(s => saleGroupKey(s) === id).map(s=>s.id).filter(Boolean)
+      if (toDel.length) await db.table('sales').bulkDelete(toDel)
+    }
     await runSearch()
   }
 
   async function toggleVoid(id, current){
+    if (mode !== 'archived' || !db.tables.find(t=>t.name==='archivedOrders')){
+      alert('Storno nije dostupno u ovom režimu.')
+      return
+    }
     const toVal = !current
     await db.table('archivedOrders').update(id, { voided: toVal })
     await runSearch()
@@ -535,7 +656,9 @@ function ReceiptsTab(){
 
   return (
     <Card>
-      <div className="text-lg font-semibold mb-3">Računi (arhiva predračuna)</div>
+      <div className="text-lg font-semibold mb-3">
+        Računi {mode==='salesSynth' && <span className="text-xs opacity-70">(rekonstruisano iz prodaje)</span>}
+      </div>
 
       <div className="grid md:grid-cols-7 gap-2">
         <input type="date" value={from} onChange={e=>setFrom(e.target.value)} className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900" />
@@ -549,8 +672,8 @@ function ReceiptsTab(){
         <input type="number" value={max} onChange={e=>setMax(e.target.value)} placeholder="Max RSD" className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900" />
 
         <div className="flex items-center gap-2">
-          <label className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900">
-            <input type="checkbox" checked={showVoided} onChange={e=>setShowVoided(e.target.checked)} />
+          <label className={`inline-flex items-center gap-2 text-sm px-3 py-2 rounded-xl border ${mode==='archived' ? 'bg-white dark:bg-neutral-900' : 'bg-neutral-100/60 dark:bg-neutral-800/60 opacity-60'}`}>
+            <input type="checkbox" checked={showVoided} onChange={e=>setShowVoided(e.target.checked)} disabled={mode!=='archived'} />
             <span>Prikaži stornirane</span>
           </label>
         </div>
@@ -571,25 +694,27 @@ function ReceiptsTab(){
 
       <div className="mt-4 space-y-2 max-h-[60vh] overflow-auto pr-1">
         {pageRows.map(r=>{
-          const dateStr = r.date.toLocaleString()
+          const dateStr = r.date?.toLocaleString?.() || new Date(r.createdAt).toLocaleString()
           const tableName = r.tableId ? (tables.find(t=>t.id===r.tableId)?.name ?? `Sto ${r.tableId}`) : 'Brzo kucanje'
           const isVoided = !!r.voided
           return (
-            <div key={r.id} className={`rounded-xl border p-3 ${isVoided ? 'border-red-300/70 bg-red-50 dark:bg-red-950/20 dark:border-red-800' : 'border-neutral-200 dark:border-neutral-800'}`}>
+            <div key={r.id} className={`rounded-xl border p-3 ${mode==='archived' && isVoided ? 'border-red-300/70 bg-red-50 dark:bg-red-950/20 dark:border-red-800' : 'border-neutral-200 dark:border-neutral-800'}`}>
               <div className="flex flex-wrap items-center gap-2 justify-between">
                 <div className="font-semibold flex items-center gap-2">
                   <span>{tableName}</span>
-                  {isVoided && <Badge className="border-red-400 text-red-700 dark:text-red-300">STORNIRANO</Badge>}
+                  {mode==='archived' && isVoided && <Badge className="border-red-400 text-red-700 dark:text-red-300">STORNIRANO</Badge>}
                 </div>
                 <div className="text-sm opacity-80">{dateStr}</div>
               </div>
-              <div className={`mt-1 text-sm ${isVoided ? 'opacity-60 line-through' : 'opacity-90'}`}>{r.text || '—'}</div>
+              <div className={`mt-1 text-sm ${mode==='archived' && isVoided ? 'opacity-60 line-through' : 'opacity-90'}`}>{r.text || '—'}</div>
               <div className="mt-2 flex items-center justify-between">
-                <div className={`text-lg font-bold ${isVoided ? 'opacity-60 line-through' : ''}`}>{r.total.toFixed(2)} RSD</div>
+                <div className={`text-lg font-bold ${mode==='archived' && isVoided ? 'opacity-60 line-through' : ''}`}>{r.total.toFixed(2)} RSD</div>
                 <div className="flex gap-2">
-                  <Button onClick={()=>toggleVoid(r.id, r.voided)} className={isVoided ? 'bg-amber-600 hover:bg-amber-700' : 'bg-orange-600 hover:bg-orange-700'}>
-                    {isVoided ? 'Vrati' : 'Storniraj'}
-                  </Button>
+                  {mode==='archived' && (
+                    <Button onClick={()=>toggleVoid(r.id, r.voided)} className={isVoided ? 'bg-amber-600 hover:bg-amber-700' : 'bg-orange-600 hover:bg-orange-700'}>
+                      {isVoided ? 'Vrati' : 'Storniraj'}
+                    </Button>
+                  )}
                   <Button onClick={()=>removeReceipt(r.id)} className="bg-red-600 hover:bg-red-700">Obriši</Button>
                 </div>
               </div>
