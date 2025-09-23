@@ -4,8 +4,42 @@ import { Card, Button } from '../components/UI.jsx'
 import { format } from 'date-fns'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
+/* ====================== POMOĆNE – RADNI DAN 15:00–05:00 ====================== */
+/** Iz lok. datuma vrati yyyy-MM-dd string */
+function ymd(d){
+  const y = d.getFullYear()
+  const m = String(d.getMonth()+1).padStart(2,'0')
+  const day = String(d.getDate()).padStart(2,'0')
+  return `${y}-${m}-${day}`
+}
+/** Radni dan: ako je sat < 15, pripiši prethodnom danu; inače tekući. */
+function businessDayKey(dateLike){
+  const d = (dateLike instanceof Date) ? dateLike : new Date(dateLike)
+  if (isNaN(d.getTime())) return null
+  const h = d.getHours()
+  if (h < 15){
+    const prev = new Date(d)
+    prev.setDate(prev.getDate()-1)
+    return ymd(prev)
+  }
+  return ymd(d)
+}
+/** Pokušaj da iz reda izvučeš timestamp i pretvoriš u 'biz day' ključ. */
+function rowBizDay(r){
+  // najčešće polje
+  const t = r?.createdAt ?? r?.timestamp ?? r?.time ?? null
+  if (t){
+    const k = businessDayKey(t)
+    if (k) return k
+  }
+  // fallback ako postoji već spremljeno 'day'
+  if (r?.day) return r.day
+  return null
+}
+
+/* ====================== PRINT CSS ====================== */
 function buildPrintCSS(){
-  const SHIFT_MM = 2; // blagi nudge ulevo da se centrirá i na većini termalnih
+  const SHIFT_MM = 2; // blagi nudge ulevo da se centrira na većini termalnih
   return `
     <style>
       @page { size: 80mm auto; margin: 0; }
@@ -37,16 +71,18 @@ function openPrint(html){
 }
 function formatDateTime(d=new Date()){ return d.toLocaleString('sr-RS') }
 
-function groupByDay(rows){
+/* ====================== GRUPISANJE ====================== */
+function groupByBusinessDay(rows){
   const map = new Map()
   for (const r of rows){
-    const key = r.day
+    const key = rowBizDay(r)
+    if (!key) continue
     const prev = map.get(key) || { day: key, total: 0, count: 0 }
-    prev.total += r.qty * r.priceEach
-    prev.count += r.qty
+    prev.total += (r.qty || 0) * (r.priceEach || 0)
+    prev.count += (r.qty || 0)
     map.set(key, prev)
   }
-  return Array.from(map.values()).sort((a,b)=>a.day.localeCompare(b.day))
+  return Array.from(map.values()).sort((a,b)=> a.day.localeCompare(b.day))
 }
 function groupItems(rows){
   const m = new Map()
@@ -72,6 +108,7 @@ function renderGroupedRows(grouped){
   }).join('')
 }
 
+/* ====================== KOMPONENTA ====================== */
 export default function Reports(){
   const [sales, setSales] = useState([])
   const [openTotals, setOpenTotals] = useState({ total:0, count:0, byTable:[] })
@@ -79,9 +116,11 @@ export default function Reports(){
   useEffect(()=>{ reload() },[])
 
   async function reload(){
+    // sve odštampane stavke
     const s = await db.table('sales').toArray()
     setSales(s)
 
+    // trenutno otkucano po stolovima
     const ordersOpen = await db.table('orders').where('status').equals('open').toArray()
     const items = await db.table('orderItems').toArray()
     const byOrder = new Map()
@@ -104,22 +143,36 @@ export default function Reports(){
     setOpenTotals({ total, count, byTable })
   }
 
-  const byDay = useMemo(()=> groupByDay(sales), [sales])
-  const todayStr = format(new Date(), 'yyyy-MM-dd')
-  const today = byDay.find(d=>d.day===todayStr)
+  // Grupisanje po "radnom danu"
+  const byDay = useMemo(()=> groupByBusinessDay(sales), [sales])
+
+  // "Danas" je tekući radni dan (po pravilu 15h)
+  const todayBizKey = businessDayKey(new Date())
+  const today = byDay.find(d=>d.day===todayBizKey)
+
+  // Poslednjih 7 "radnih dana"
   const last7 = byDay.slice(-7)
   const sumLast7 = last7.reduce((s,d)=>s+d.total,0)
 
   function printDay(d){
-    const itemsOfDay = sales.filter(s => s.day === d.day)
+    // uzmi sve stavke koje pripadaju tom radnom danu
+    const itemsOfDay = sales.filter(s => rowBizDay(s) === d.day)
     const grouped = groupItems(itemsOfDay)
     const css = buildPrintCSS()
     const rows = renderGroupedRows(grouped)
+
+    // za header pokažemo opseg tog radnog dana (15:00–05:00)
+    const [Y, M, D] = d.day.split('-').map(Number)
+    const start = new Date(Y, M-1, D, 15, 0, 0)          // dan u 15:00
+    const end   = new Date(start); end.setDate(end.getDate()+1); end.setHours(5,0,0,0) // sutra u 05:00
+
+    const rangeLabel = `${format(start, 'yyyy-MM-dd HH:mm')} – ${format(end, 'yyyy-MM-dd HH:mm')}`
+
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
       <body><div class="receipt">
-        <div class="center bold">PRESEK ZA DAN</div>
-        <div class="center small">Datum preseka: ${d.day}</div>
+        <div class="center bold">PRESEK ZA RADNI DAN</div>
+        <div class="center small">${rangeLabel}</div>
         <div class="hr"></div>
         <div class="row mono"><div>Ukupan promet</div><div class="bold">${d.total.toFixed(2)} RSD</div></div>
         <div class="row mono"><div>Ukupno artikala</div><div class="bold">${d.count}</div></div>
@@ -139,7 +192,7 @@ export default function Reports(){
 
   function printWeek(){
     const daySet = new Set(last7.map(d => d.day))
-    const itemsOfWeek = sales.filter(s => daySet.has(s.day))
+    const itemsOfWeek = sales.filter(s => daySet.has(rowBizDay(s)))
     const grouped = groupItems(itemsOfWeek)
     const css = buildPrintCSS()
     const rowsDays = last7.map(d=>`<div class="row mono"><div>${d.day}</div><div>${d.total.toFixed(2)} RSD</div></div>`).join('')
@@ -147,7 +200,7 @@ export default function Reports(){
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
       <body><div class="receipt">
-        <div class="center bold">PRESEK POSLEDNJIH 7 DANA</div>
+        <div class="center bold">PRESEK POSLEDNJIH 7 RADNIH DANA</div>
         <div class="hr"></div>
         ${rowsDays || '<div class="small" style="opacity:.8">Nema podataka.</div>'}
         <div class="hr"></div>
@@ -169,7 +222,7 @@ export default function Reports(){
   return (
     <div className="max-w-6xl mx-auto p-4 space-y-6">
       <Card>
-        <div className="text-lg font-semibold mb-3">Danas (odštampani predračuni)</div>
+        <div className="text-lg font-semibold mb-3">Danas (odštampani predračuni — radni dan)</div>
         {today ? (
           <div className="flex items-center justify-between">
             <div>{today.day}</div>
@@ -177,13 +230,13 @@ export default function Reports(){
             <Button onClick={()=>printDay(today)}>Štampaj</Button>
           </div>
         ) : (
-          <div className="opacity-70">Nema podataka za danas.</div>
+          <div className="opacity-70">Nema podataka za današnji radni dan.</div>
         )}
       </Card>
 
       <Card>
         <div className="flex items-center justify-between mb-3">
-          <div className="text-lg font-semibold">Poslednjih 7 dana</div>
+          <div className="text-lg font-semibold">Poslednjih 7 radnih dana</div>
           {last7.length>0 && <Button onClick={printWeek}>Štampaj 7 dana</Button>}
         </div>
         {last7.length>0 ? (
@@ -223,7 +276,7 @@ export default function Reports(){
       </Card>
 
       <Card>
-        <div className="text-lg font-semibold mb-3">Svi dani (odštampani predračuni)</div>
+        <div className="text-lg font-semibold mb-3">Svi radni dani</div>
         <div className="space-y-1">
           {byDay.map(d=>(
             <div key={d.day} className="flex items-center justify-between border-b py-1">
