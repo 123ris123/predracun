@@ -15,19 +15,18 @@ function getIconByName(name){
 
 /* ===== Helpers (print) ===== */
 function pad2(n){ return String(n).padStart(2,'0') }
-function makePrebillNo(d=new Date()){
+function makePrebillNo(d=new Date(), suffix=''){
   const y = d.getFullYear(), m = pad2(d.getMonth()+1), dd = pad2(d.getDate())
   const hh = pad2(d.getHours()), mm = pad2(d.getMinutes()), ss = pad2(d.getSeconds())
-  return `PR-${y}${m}${dd}-${hh}${mm}${ss}`
+  return `PR-${y}${m}${dd}-${hh}${mm}${ss}${suffix ? '-' + suffix : ''}`
 }
 function formatDateTime(d=new Date()){
   return d.toLocaleString('sr-RS')
 }
 
-/* === PRINT TEMPLATES (80mm) — centrirano, VEĆI gornji logo, bez uplatnog mesta i PDV napomene === */
+/* === PRINT TEMPLATES (80mm) — centrirano, veliki gornji logo === */
 function buildPrintCSS(){
-  // SHIFT_MM lagano gura sadržaj ulevo da se vizuelno centrira
-  const SHIFT_MM = 2; // ~2mm ulevo
+  const SHIFT_MM = 2; // blagi pomeraj ulevo radi centriranja
   return `
     <style>
       @page { size: 80mm auto; margin: 0; }
@@ -59,16 +58,22 @@ function buildPrintCSS(){
       .unit { min-width: 64px; text-align:right; }
       .sum  { min-width: 64px; text-align:right; }
 
-      /* Povećan logo ~duplo, maksimalna bezbedna širina u okviru papira */
       .logo-top { display:block; margin:0 auto 4px auto; width: 68mm; height:auto; }
 
       .thanks { text-align:center; font-weight:700; margin-top:8px; }
       .foot-warn { margin-top: 8px; border-top:1px solid #000; padding-top:6px; text-align:center; font-weight:700; }
       .foot-note { margin-top: 4px; text-align:center; font-size:11px; opacity:.92 }
-      .tail { height: 8mm; } /* kratki feed za cutter */
+      .tail { height: 8mm; }
 
       .qr { display:block; margin:8px auto 0 auto; width: 28mm; height:auto; }
       .qr-url { text-align:center; font-size:11px; word-break:break-all; opacity:.95; margin-top:2px; }
+
+      /* Modal */
+      .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:60; }
+      .modal-card { width: min(720px, 96vw); background:#fff; color:#111; border-radius:14px; padding:16px; border:1px solid #ddd; }
+      @media (prefers-color-scheme: dark){
+        .modal-card { background:#0b0b0b; color:#e5e7eb; border-color:#2d2d2d; }
+      }
     </style>
   `
 }
@@ -83,14 +88,12 @@ function buildReceiptHTML({
 }){
   const css = buildPrintCSS()
 
-  // HEADER (nema "Uplatno mesto")
   const header = `
     ${shop.logo ? `<img src="${shop.logo}" class="logo-top" alt="logo" />` : ''}
     <div class="center bold">${shop.name}</div>
     ${shop.place ? `<div class="center small">${shop.place}</div>` : ''}
   `
 
-  // META
   const metaBlock = `
     <div class="divider">*** ${meta.title} ***</div>
     <div class="row small mono"><div>Datum/čas</div><div>${meta.datetime}</div></div>
@@ -98,7 +101,6 @@ function buildReceiptHTML({
     ${meta.refLeft ? `<div class="row small mono"><div>Ref</div><div>${meta.refLeft}</div></div>` : ''}
   `
 
-  // TABELA
   const headCols = `
     <div class="row small mono" style="opacity:.9">
       <div class="name left bold">Artikal</div>
@@ -118,7 +120,6 @@ function buildReceiptHTML({
     `
   }).join('')
 
-  // EKSTRAS (izbačen PDV red)
   const extras = `
     <div class="hr"></div>
     <div class="row mono"><div>Stavki ukupno</div><div>${items.reduce((s,i)=>s+i.qty,0)}</div></div>
@@ -127,7 +128,6 @@ function buildReceiptHTML({
     <div class="row mono"><div>Napomena</div><div>Čuvajte ovaj predračun do naplate</div></div>
   `
 
-  // QR (Instagram) — samo za predračun
   const qrBlock = qrUrl ? `
     <img src="/qr_instagram.png" class="qr" alt="QR Instagram" />
     <div class="qr-url small">${qrUrl}</div>
@@ -164,6 +164,93 @@ function openPrint(html){
   w.focus()
 }
 
+/* === Split modal (lokalna komponenta) === */
+function SplitModal({ open, onClose, sourceItems, products, onConfirm }){
+  const [q, setQ] = useState(()=> {
+    const m = new Map()
+    sourceItems.forEach(it => m.set(it.id, 0))
+    return m
+  })
+
+  useEffect(()=>{
+    if (open){
+      const m = new Map()
+      sourceItems.forEach(it => m.set(it.id, 0))
+      setQ(m)
+    }
+  }, [open, sourceItems])
+
+  function inc(it){
+    const max = it.qty
+    setQ(prev=>{
+      const n = new Map(prev)
+      const cur = n.get(it.id) || 0
+      n.set(it.id, Math.min(max, cur+1))
+      return n
+    })
+  }
+  function dec(it){
+    setQ(prev=>{
+      const n = new Map(prev)
+      const cur = n.get(it.id) || 0
+      n.set(it.id, Math.max(0, cur-1))
+      return n
+    })
+  }
+
+  const rows = sourceItems.map(it=>{
+    const p = products.find(x=>x.id===it.productId)
+    const name = p?.name ?? 'Artikal'
+    const price = it.priceEach ?? p?.price ?? 0
+    const sel = q.get(it.id) || 0
+    return { item: it, name, price, selected: sel }
+  })
+
+  const picked = rows.filter(r => r.selected>0)
+  const totalSel = picked.reduce((s,r)=> s + r.selected * r.price, 0)
+
+  if (!open) return null
+  return (
+    <div className="modal-backdrop" onClick={(e)=>{ if(e.target===e.currentTarget) onClose() }}>
+      <div className="modal-card">
+        <div className="text-lg font-semibold mb-2">Podeli račun – odaberi stavke</div>
+        <div className="text-sm opacity-80 mb-3">Izaberi količine koje idu na posebni predračun. Ostalo ostaje na stolu.</div>
+        <div className="max-h-[50vh] overflow-auto no-scrollbar space-y-2">
+          {rows.map(r=>(
+            <div key={r.item.id} className="border rounded-xl px-3 py-2 flex items-center justify-between">
+              <div>
+                <div className="font-medium">{r.name}</div>
+                <div className="text-xs opacity-70">{r.price.toFixed(2)} RSD &middot; Na stolu: {r.item.qty}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={()=>dec(r.item)} className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:border-neutral-800 touch-btn transition">−</button>
+                <div className="w-8 text-center">{r.selected}</div>
+                <button onClick={()=>inc(r.item)} className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:border-neutral-800 touch-btn transition">+</button>
+              </div>
+            </div>
+          ))}
+          {rows.length===0 && <div className="opacity-70">Nema stavki.</div>}
+        </div>
+
+        <div className="mt-3 flex items-center justify-between">
+          <div className="text-lg font-semibold">Ukupno selektovano: {totalSel.toFixed(2)} RSD</div>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 border dark:border-neutral-800 touch-btn">Otkaži</button>
+            <button
+              onClick={()=>onConfirm(picked.map(p=>({ itemId:p.item.id, productId:p.item.productId, qty:p.selected, priceEach:p.price })))}
+              className="px-3 py-2 rounded-xl bg-brand hover:bg-brand-dark text-white touch-btn"
+              disabled={picked.length===0}
+            >
+              Štampaj deo
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* === POS === */
 export default function POS(){
   const [params] = useSearchParams()
   const nav = useNavigate()
@@ -176,6 +263,8 @@ export default function POS(){
   const [orderId, setOrderId] = useState(null)
   const [activeTab, setActiveTab] = useState(TAB_ALL)
   const [topIds, setTopIds] = useState([])
+
+  const [splitOpen, setSplitOpen] = useState(false)
 
   useEffect(()=>{ (async ()=>{
     await seedIfEmpty()
@@ -250,6 +339,7 @@ export default function POS(){
     return products.filter(p => p.categoryId === activeTab)
   }, [products, activeTab, topIds])
 
+  /* ======== Štampa celog predračuna ======== */
   async function printAndArchive(){
     let list = items
     let label = quickMode ? 'Brzo kucanje' : `Sto #${tableId}`
@@ -278,11 +368,10 @@ export default function POS(){
       }
     }
 
-    // podaci o lokalu — adresa ažurirana, nema uplatnog mesta
     const shop = {
       name: 'Caffe Club M',
       place: 'Drinska 2, 15310 Ribari',
-      logo: '/racun_logo.png' // <-- postavi fajl u /public kao racun_logo.png
+      logo: '/racun_logo.png'
     }
     const meta = {
       title: 'PREDRAČUN',
@@ -297,11 +386,92 @@ export default function POS(){
       items: mapped,
       total: totalNow,
       warning: 'OVO NIJE FISKALNI RAČUN',
-      qrUrl: 'https://www.instagram.com/caffe_club_m/#' // samo predračun
+      qrUrl: 'https://www.instagram.com/caffe_club_m/#'
     })
     openPrint(html)
 
     if (!quickMode) nav('/')
+  }
+
+  /* ======== Štampa dela (split) – samo selektovane stavke ======== */
+  async function handleSplitConfirm(picked){ 
+    // picked: [{ itemId, productId, qty, priceEach }]
+    if (!picked || picked.length===0){ setSplitOpen(false); return }
+
+    // Pripremi mapu qty za smanjenje
+    const reduceById = new Map()
+    picked.forEach(p => reduceById.set(p.itemId, p.qty))
+
+    // Izračun i priprema linija za print
+    const mapped = picked.map(p => {
+      const prod = products.find(x=>x.id===p.productId)
+      const name = prod?.name ?? 'Artikal'
+      return { name, qty: p.qty, priceEach: p.priceEach || prod?.price || 0 }
+    })
+    const totalNow = mapped.reduce((s,i)=> s + i.qty*i.priceEach, 0)
+
+    // Arhiviraj kao poseban order, ali ne zatvaraj sto (ostaje otvoren)
+    let tempOrderId
+    if (quickMode){
+      tempOrderId = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
+      for (const p of picked){
+        await db.table('orderItems').add({ orderId: tempOrderId, productId: p.productId, qty: p.qty, priceEach: p.priceEach })
+      }
+      await archiveOrder(tempOrderId)
+      // smanji u lokalnom stanju
+      setItems(prev=>{
+        return prev.map(it=>{
+          const dec = reduceById.get(it.id) || 0
+          const newQty = it.qty - dec
+          return newQty>0 ? {...it, qty:newQty} : it
+        }).filter(it => it.qty>0)
+      })
+    } else {
+      tempOrderId = await db.table('orders').add({ tableId, status: 'open', createdAt: new Date().toISOString() })
+      for (const p of picked){
+        await db.table('orderItems').add({ orderId: tempOrderId, productId: p.productId, qty: p.qty, priceEach: p.priceEach })
+      }
+      await archiveOrder(tempOrderId)
+      // smanji na glavnom orderu
+      for (const p of picked){
+        const row = await db.table('orderItems').get(p.itemId)
+        if (!row) continue
+        const newQty = (row.qty || 0) - p.qty
+        if (newQty <= 0) {
+          await db.table('orderItems').delete(row.id)
+        } else {
+          await db.table('orderItems').update(row.id, { qty: newQty })
+        }
+      }
+      const it = await db.table('orderItems').where('orderId').equals(orderId).toArray()
+      setItems(it)
+    }
+
+    // Štampa samo izabrani deo
+    const label = quickMode ? 'Brzo kucanje — DEO' : `Sto #${tableId} — DEO`
+    const shop = {
+      name: 'Caffe Club M',
+      place: 'Drinska 2, 15310 Ribari',
+      logo: '/racun_logo.png'
+    }
+    const now = new Date()
+    const meta = {
+      title: 'PREDRAČUN (DEO)',
+      datetime: formatDateTime(now),
+      number: makePrebillNo(now, 'DEO'),
+      refLeft: label
+    }
+    const html = buildReceiptHTML({
+      shop,
+      meta,
+      items: mapped,
+      total: totalNow,
+      warning: 'OVO NIJE FISKALNI RAČUN',
+      qrUrl: 'https://www.instagram.com/caffe_club_m/#'
+    })
+    openPrint(html)
+
+    setSplitOpen(false)
   }
 
   function saveAndBack(){
@@ -332,18 +502,27 @@ export default function POS(){
           <div className="text-2xl font-bold">{total.toFixed(2)} RSD</div>
         </div>
 
+        {/* Dugmad */}
         {quickMode ? (
           <div className="mt-3 grid grid-cols-1 gap-2">
             <Button onClick={printAndArchive} className="w-full touch-btn flex items-center justify-center gap-2">
               <Printer size={18}/> Štampaj predračun
             </Button>
+            {items.length>0 && (
+              <Button onClick={()=>setSplitOpen(true)} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn">
+                Podeli račun (deo)
+              </Button>
+            )}
           </div>
         ) : (
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <Button onClick={printAndArchive} className="w-full touch-btn flex items-center justify-center gap-2">
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            <Button onClick={printAndArchive} className="w-full touch-btn flex items-center justify-center gap-2 col-span-2">
               <Printer size={18}/> Štampaj predračun
             </Button>
-            <Button onClick={saveAndBack} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn">
+            <Button onClick={()=>setSplitOpen(true)} className="w-full bg-amber-600 hover:bg-amber-700 touch-btn">
+              Podeli račun
+            </Button>
+            <Button onClick={saveAndBack} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn col-span-3">
               Sačuvaj / Nazad
             </Button>
           </div>
@@ -382,6 +561,15 @@ export default function POS(){
           )}
         </div>
       </Card>
+
+      {/* Split modal */}
+      <SplitModal
+        open={splitOpen}
+        onClose={()=>setSplitOpen(false)}
+        sourceItems={items}
+        products={products}
+        onConfirm={handleSplitConfirm}
+      />
     </div>
   )
 }
