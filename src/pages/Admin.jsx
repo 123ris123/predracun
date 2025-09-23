@@ -4,8 +4,8 @@ import { Card, Button, Badge } from '../components/UI.jsx'
 import useAuth from '../store/useAuth.js'
 import * as Icons from 'lucide-react'
 
-/* Veličina stola i UI */
-const TABLE_SIZE = 32
+/* Veličina stola i UI (+20%) */
+const TABLE_SIZE = 38
 
 const ICON_CHOICES = [
   'Coffee','Beer','Wine','Martini','GlassWater','CupSoda','Utensils',
@@ -305,7 +305,7 @@ function ProductsTab({ categories, products, onChange }){
   )
 }
 
-/* -------------------- RASPORED: pixel-perfect + ista pozadina kao u mapi stolova --------------------- */
+/* -------------------- RASPORED: fullscreen editor sa istom slikom kao mapa stolova --------------------- */
 function LayoutTab({ tables, onChange }){
   const stageRef = useRef(null)
   const [selectedId, setSelectedId] = useState(null)
@@ -315,7 +315,6 @@ function LayoutTab({ tables, onChange }){
     const host = stageRef.current
     if (!host) return { xpct: 0, ypct: 0 }
     const rect = host.getBoundingClientRect()
-    // centriramo sto na prst: oduzmemo pola TABLE_SIZE
     const x = clientX - rect.left - TABLE_SIZE/2
     const y = clientY - rect.top  - TABLE_SIZE/2
     const xpct = Math.min(1, Math.max(0, x / Math.max(1, rect.width  - TABLE_SIZE)))
@@ -390,12 +389,16 @@ function LayoutTab({ tables, onChange }){
         </div>
       </Card>
 
+      {/* FULLSCREEN-LIKE editor – ista veličina i pozadina kao TableMap */}
       <Card>
-        <div className="text-lg font-semibold mb-3">Raspored — isto kao na mapi stolova (pixel perfect)</div>
+        <div className="text-lg font-semibold mb-3">Raspored — ista slika, ista veličina kao na mapi</div>
 
-        {/* Identicna pozadina kao TableMap */}
-        <div className="relative rounded-2xl overflow-hidden" style={{height: 'calc(100svh - 200px)'}}>
-          <div className="tables-area"><div className="tables-area-overlay" /></div>
+        <div className="relative rounded-2xl overflow-hidden fullscreen-map">
+          {/* identična pozadina: koristimo <img> da GIF ne bude isečen */}
+          <div className="tables-area">
+            <img className="tables-img" src="/tables-bg.gif" alt="Mapa lokala" />
+            <div className="tables-area-overlay" />
+          </div>
 
           {/* Stage za rad */}
           <div
@@ -414,7 +417,7 @@ function LayoutTab({ tables, onChange }){
                     key={t.id}
                     onPointerDown={(e)=>handlePointerDown(e, t.id)}
                     onTouchStart={(e)=>handlePointerDown(e, t.id)}
-                    className={`absolute rounded-xl border flex items-center justify-center select-none cursor-grab active:cursor-grabbing
+                    className={`absolute rounded-lg border flex items-center justify-center select-none cursor-grab active:cursor-grabbing
                       ${active ? 'border-brand bg-brand/10' : 'border-neutral-300 hover:border-brand dark:border-neutral-700'}
                     `}
                     style={{
@@ -432,7 +435,7 @@ function LayoutTab({ tables, onChange }){
         </div>
 
         <div className="mt-2 text-sm opacity-80">
-          Savet: dodirni prazno mesto da postaviš izabrani sto, ili prevuci postojeći sto prstom. Pozicija se čuva u procentima — isto se prikazuje na ekranu sa stolovima.
+          Savet: dodirni prazno mesto da postaviš izabrani sto, ili prevuci postojeći sto prstom. Pozicija se čuva u procentima — prikaz je identičan mapi stolova.
         </div>
       </Card>
     </div>
@@ -441,6 +444,7 @@ function LayoutTab({ tables, onChange }){
 
 /* -------------------- RAČUNI (arhiva predračuna) — pregled, pretraga, brisanje --------------------- */
 function ReceiptsTab(){
+  // (neizmenjeno)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [tableId, setTableId] = useState('')
@@ -458,16 +462,14 @@ function ReceiptsTab(){
   })() },[])
 
   async function runSearch(){
-    // čitamo sve arhivirane i filtriramo u memoriji (dataset je lokalni)
-    let list = await db.table('archivedOrders').reverse().sortBy('createdAt') // najnoviji prvi
-    // filter: datumi
+    let list = await db.table('archivedOrders').reverse().sortBy('createdAt')
     if (from){
       const f = new Date(from).toISOString()
       list = list.filter(o => o.createdAt >= f)
     }
     if (to){
       const t = new Date(to)
-      t.setDate(t.getDate()+1) // inclusive
+      t.setDate(t.getDate()+1)
       const tIso = t.toISOString()
       list = list.filter(o => o.createdAt < tIso)
     }
@@ -475,7 +477,6 @@ function ReceiptsTab(){
       const tid = Number(tableId)
       list = list.filter(o => (o.tableId ?? 0) === tid)
     }
-    // učitaj stavke i total/tekst
     const out = []
     for (const o of list){
       const its = await db.table('archivedItems').where('orderId').equals(o.id).toArray()
@@ -486,7 +487,6 @@ function ReceiptsTab(){
         date: new Date(o.createdAt)
       })
     }
-    // filter: q/min/max
     const qq = q.trim().toLowerCase()
     let f = out
     if (qq) f = f.filter(r => r.text.toLowerCase().includes(qq))

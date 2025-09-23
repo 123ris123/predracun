@@ -55,12 +55,22 @@ div[role="card"], .card, .bg-surface {
   overflow: hidden;
 }
 
-/* Pozadinski GIF preko cele mape — COVER da popuni bez praznih traka */
+/* Pozadina sada koristi <img> da bi GIF stao ceo bez sečenja.
+   object-fit: contain = bez “crop”-a; image je centriran; pošto “taman staje”, popuniće prostor.
+   Ako malo “fali”, prirodno će imati tanke trake, ali slika neće biti isečena. */
 .tables-area {
   position: absolute;
   inset: 0;
-  background: center center / cover no-repeat fixed url("/tables-bg.gif");
   background-color: var(--bg);
+}
+.tables-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;     /* ključ: bez sečenja */
+  object-position: center; /* centriraj */
+  pointer-events: none;    /* da ne hvata klikove */
 }
 .tables-area-overlay {
   position: absolute; inset: 0;

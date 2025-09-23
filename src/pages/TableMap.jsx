@@ -3,8 +3,8 @@ import { db, seedIfEmpty } from '../store/db.js'
 import { Link } from 'react-router-dom'
 import { Coffee } from 'lucide-react'
 
-/** veličina stola */
-const TABLE_SIZE = 32
+/** veličina stola (+20%) */
+const TABLE_SIZE = 38
 
 /** helper: fallback xpct/ypct ako još imamo stari grid x,y */
 function getPercentFromLegacy(t){
@@ -58,8 +58,11 @@ export default function TableMap(){
 
   return (
     <div className="fullscreen-map pr-56">{/* ostavi prostor za desni sidebar iz App.jsx */}
-      {/* POZADINA */}
-      <div className="tables-area"><div className="tables-area-overlay" /></div>
+      {/* POZADINA — koristimo <img> da GIF bude ceo (bez sečenja) */}
+      <div className="tables-area">
+        <img className="tables-img" src="/tables-bg.gif" alt="Mapa lokala" />
+        <div className="tables-area-overlay" />
+      </div>
 
       {/* STAGE */}
       <div className="tables-stage">
@@ -72,7 +75,7 @@ export default function TableMap(){
                 key={t.id}
                 to={`/pos?table=${t.id}`}
                 className={`absolute inline-flex items-center justify-center touch-btn transition
-                  rounded-xl shadow-sm border text-[11px] font-semibold select-none backdrop-blur-[2px]
+                  rounded-lg shadow-sm border text-[11px] font-semibold select-none backdrop-blur-[2px]
                   ${isBusy
                     ? 'border-red-400/70 bg-red-500/20 hover:border-red-400'
                     : 'border-neutral-200/70 bg-[var(--surface)]/80 hover:border-brand dark:border-neutral-700/70 dark:bg-neutral-900/70'}

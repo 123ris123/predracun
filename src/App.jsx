@@ -31,8 +31,13 @@ function SideBar(){
     <div
       className="no-print fixed top-0 right-0 h-screen w-56 bg-white/80 dark:bg-neutral-950/90 backdrop-blur border-l border-neutral-200 dark:border-neutral-800 flex flex-col"
     >
-      <div className="p-4 text-lg font-bold text-center border-b border-neutral-200 dark:border-neutral-800">
-        Caffe Club M<br/>POS
+      {/* LOGO umesto teksta */}
+      <div className="p-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-center">
+        <img
+          src={theme === 'light' ? '/logo-light.png' : '/logo-dark.png'}
+          alt="Caffe Club M"
+          className="h-10 w-auto object-contain"
+        />
       </div>
 
       <nav className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
