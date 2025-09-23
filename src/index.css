@@ -55,7 +55,7 @@ div[role="card"], .card, .bg-surface {
   overflow: hidden;
 }
 
-/* Pozadina: <img> bez sečenja */
+/* Pozadina: <img> bez sečenja i skroz levo (content je full-bleed; nav je fiksiran desno) */
 .tables-area {
   position: absolute;
   inset: 0;
@@ -67,7 +67,7 @@ div[role="card"], .card, .bg-surface {
   width: 100%;
   height: 100%;
   object-fit: contain;     /* bez crop-a, centrirano */
-  object-position: center;
+  object-position: center left; /* “skroz levo” */
   pointer-events: none;
 }
 .tables-area-overlay {
@@ -84,8 +84,9 @@ div[role="card"], .card, .bg-surface {
   padding: 12px;
 }
 
-/* Print stil */
+/* Print – globalni reset (ne koristimo ovde template stilove; oni su u prozorima za štampu) */
 @media print {
+  @page { size: 80mm auto; margin: 0; }
+  html, body { margin: 0 !important; padding: 0 !important; }
   .no-print { display: none !important; }
-  body { background: #fff; color: #000; }
 }

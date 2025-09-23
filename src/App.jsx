@@ -31,14 +31,16 @@ function SideBar(){
   return (
     <>
       <div
-        className="no-print fixed top-0 right-0 h-screen w-64 bg-white/80 dark:bg-neutral-950/90 backdrop-blur border-l border-neutral-200 dark:border-neutral-800 flex flex-col"
+        className="no-print fixed top-0 right-0 h-screen w-60 bg-white/80 dark:bg-neutral-950/90 backdrop-blur border-l border-neutral-200 dark:border-neutral-800 flex flex-col"
       >
-        {/* LOGO – 3x veći */}
-        <div className="p-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-center">
+        {/* HEADER sa natpisom i logom */}
+        <div className="border-b border-neutral-200 dark:border-neutral-800 flex flex-col items-center justify-center py-3">
+          <div className="text-xs opacity-70 mb-1">Created By:</div>
           <img
             src={theme === 'light' ? '/logo-light.png' : '/logo-dark.png'}
             alt="Caffe Club M"
-            className="h-28 w-auto object-contain"   /* ~3x od prethodnog h-10 */
+            className="h-36 w-full object-contain block"
+            style={{ margin: 0, padding: 0 }}
           />
         </div>
 
@@ -84,7 +86,7 @@ function SideBar(){
         </div>
       </div>
 
-      {/* HELP MODAL */}
+      {/* HELP MODAL (ostaje isto kao ranije) */}
       {showHelp && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center">
           <div className="absolute inset-0 bg-black/50" onClick={()=>setShowHelp(false)} />
@@ -94,24 +96,13 @@ function SideBar(){
               <button onClick={()=>setShowHelp(false)} className="px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700">Zatvori</button>
             </div>
             <div className="space-y-3 text-sm leading-6">
-              <div>
-                <b>Stolovi (Mapa):</b> Kliknite na sto da otvorite POS za taj sto. Crvena tačka označava zauzet sto (postoji otvorena porudžbina sa stavkama).
-              </div>
-              <div>
-                <b>Brzo kucanje:</b> Kucanje predračuna bez dodeljenog stola (za šank/šalter). Dodajte artikle sa desne strane, zatim <i>Štampaj predračun</i>.
-              </div>
-              <div>
-                <b>Admin → Proizvodi/Kategorije:</b> Dodajte, menjajte ili brišite artikle i kategorije. Dostupan je masovni uvoz iz CSV-a (Kategorija, Naziv artikla, Cena).
-              </div>
-              <div>
-                <b>Admin → Raspored:</b> Otvorite <i>Editor rasporeda (cela mapa)</i> i postavljajte stolove direktno na istu sliku/veličinu kao na mapi. Klik na prazno mesto postavlja aktivni sto; prevlačenjem pomerate.
-              </div>
-              <div>
-                <b>Štampa:</b> Štampanje predračuna smešta porudžbinu u arhivu. Brisanje računa iz arhive uklanja ga i iz preseka.
-              </div>
-              <div>
-                <b>Presek:</b> Prikazuje današnji promet, poslednjih 7 dana (graf), i stanje otvorenih stolova. Dostupna je štampa preseka po danu/7 dana.
-              </div>
+              {/* ... opis kao pre ... */}
+              <div><b>Stolovi (Mapa):</b> Kliknite na sto da otvorite POS za taj sto.</div>
+              <div><b>Brzo kucanje:</b> Kucanje predračuna bez dodeljenog stola.</div>
+              <div><b>Admin → Proizvodi/Kategorije:</b> Upravljanje artiklima i kategorijama.</div>
+              <div><b>Admin → Raspored:</b> Podešavanje pozicija stolova na slici.</div>
+              <div><b>Štampa:</b> Predračun ide u arhivu; brisanje ga uklanja i iz preseka.</div>
+              <div><b>Presek:</b> Promet danas, zadnjih 7 dana i otvoreni stolovi.</div>
             </div>
           </div>
         </div>
@@ -149,7 +140,7 @@ export default function App(){
   return (
     <div className="min-h-screen flex">
       {/* MAIN CONTENT */}
-      <div className="flex-1 pr-64"> {/* usklađeno sa širim sidebar-om */}
+      <div className="flex-1 pr-60"> {/* usklađeno sa užim sidebar-om */}
         <Routes>
           <Route path="/" element={<TableMap/>}/>
           <Route path="/login" element={<Login/>}/>

@@ -13,6 +13,63 @@ function getIconByName(name){
   return Icons[name] || Icons.Utensils
 }
 
+/* === PRINT TEMPLATES (80mm) === */
+function buildPrintCSS(){
+  return `
+    <style>
+      @page { size: 80mm auto; margin: 0; }
+      html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; }
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .receipt { width: 72mm; margin: 0 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.25; padding: 6px 4px; }
+      .center { text-align: center; }
+      .row { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+      .hr { border-top:1px dashed #000; margin:6px 0; }
+      .muted { opacity:.9 }
+      .small { font-size: 11px; }
+      .tot { font-weight: 700; }
+      .qty { min-width: 22px; text-align:right; }
+      .name { flex:1; }
+      .price { min-width: 48px; text-align:right; }
+      .mt2 { margin-top: 6px; } .mt1 { margin-top: 3px; }
+      .mb2 { margin-bottom: 6px; }
+      .nowrap { white-space: nowrap; }
+    </style>
+  `
+}
+
+function buildReceiptHTML({ title='Predračun', tableLabel='Brzo kucanje', items=[], total=0, footerNote='Hvala!' }){
+  const css = buildPrintCSS()
+  const lines = items.map(it => `
+    <div class="row">
+      <div class="qty">${it.qty}×</div>
+      <div class="name">${it.name}</div>
+      <div class="price">${(it.qty * it.priceEach).toFixed(2)} RSD</div>
+    </div>
+  `).join('')
+  return `
+    <!doctype html><html><head><meta charset="utf-8">${css}</head>
+    <body>
+      <div class="receipt">
+        <div class="center"><b>${title}</b></div>
+        <div class="center small muted">${tableLabel}</div>
+        <div class="hr"></div>
+        ${lines || '<div class="small muted">— Nema stavki —</div>'}
+        <div class="hr"></div>
+        <div class="row tot"><div>UKUPNO</div><div>${total.toFixed(2)} RSD</div></div>
+        <div class="mt2 center small">${footerNote}</div>
+      </div>
+      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 50) };</script>
+    </body></html>
+  `
+}
+
+function openPrint(html){
+  const w = window.open('', 'PRINT', 'width=420,height=600')
+  w.document.write(html)
+  w.document.close()
+  w.focus()
+}
+
 export default function POS(){
   const [params] = useSearchParams()
   const nav = useNavigate()
@@ -99,29 +156,48 @@ export default function POS(){
     return products.filter(p => p.categoryId === activeTab)
   }, [products, activeTab, topIds])
 
+  /* NOVO: štampa preko template-a (80mm) — bez viška papira */
   async function printAndArchive(){
-    if (items.length === 0){
-      window.print()
-      if (!quickMode) nav('/')
-      else setItems([])
-      return
+    // pripremi stavke i naziv stola
+    let list = items
+    let label = quickMode ? 'Brzo kucanje' : `Sto #${tableId}`
+
+    if (!quickMode){
+      // pročitaj sveže iz baze (pre arhiviranja)
+      list = await db.table('orderItems').where('orderId').equals(orderId).toArray()
     }
 
-    if (quickMode){
-      // napravi privremeni order, arhiviraj, očisti
-      const id = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
-      for (const it of items){
-        await db.table('orderItems').add({ orderId: id, productId: it.productId, qty: it.qty, priceEach: it.priceEach })
+    const mapped = list.map(it=>{
+      const p = products.find(x=>x.id===it.productId)
+      return { name: p?.name ?? 'Artikal', qty: it.qty, priceEach: it.priceEach ?? p?.price ?? 0 }
+    })
+    const totalNow = mapped.reduce((s,i)=> s + i.qty*i.priceEach, 0)
+
+    // arhiviraj po starom toku
+    if (items.length > 0){
+      if (quickMode){
+        const id = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
+        for (const it of items){
+          await db.table('orderItems').add({ orderId: id, productId: it.productId, qty: it.qty, priceEach: it.priceEach })
+        }
+        await archiveOrder(id)
+        setItems([])
+      } else {
+        await archiveOrder(orderId)
       }
-      await archiveOrder(id)
-      window.print()
-      setItems([])
-      return
     }
 
-    await archiveOrder(orderId)
-    window.print()
-    nav('/') // posle štampe sto se oslobađa i vraćamo se na mapu
+    // otvori print prozor sa šablonom
+    const html = buildReceiptHTML({
+      title: 'Predračun',
+      tableLabel: label,
+      items: mapped,
+      total: totalNow,
+      footerNote: 'Hvala!'
+    })
+    openPrint(html)
+
+    if (!quickMode) nav('/') // sto se oslobađa i vraćamo se na mapu
   }
 
   function saveAndBack(){

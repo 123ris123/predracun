@@ -4,6 +4,31 @@ import { Card, Button } from '../components/UI.jsx'
 import { format } from 'date-fns'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
+/* === PRINT TEMPLATES (80mm) za izveštaje === */
+function buildPrintCSS(){
+  return `
+    <style>
+      @page { size: 80mm auto; margin: 0; }
+      html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; }
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .receipt { width: 72mm; margin: 0 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.25; padding: 6px 4px; }
+      .center { text-align: center; }
+      .row { display:flex; justify-content:space-between; gap:8px; }
+      .hr { border-top:1px dashed #000; margin:6px 0; }
+      .small { font-size: 11px; }
+      .muted { opacity:.9 }
+      .bold { font-weight:700 }
+      .mt2 { margin-top:6px } .mb2 { margin-bottom:6px }
+    </style>
+  `
+}
+function openPrint(html){
+  const w = window.open('', 'PRINT', 'width=420,height=600')
+  w.document.write(html)
+  w.document.close()
+  w.focus()
+}
+
 function groupByDay(rows){
   const map = new Map()
   for (const r of rows){
@@ -59,28 +84,40 @@ export default function Reports(){
   const sumLast7 = last7.reduce((s,d)=>s+d.total,0)
 
   function printDay(d){
-    const w = window.open('', 'PRINT', 'height=600,width=400')
-    w.document.write(`<pre class="receipt" style="font-family:monospace">`)
-    w.document.write(`*** PRESEK ZA DAN ${d.day} ***\n`)
-    w.document.write(`Ukupno artikala: ${d.count}\n`)
-    w.document.write(`Ukupan promet:   ${d.total.toFixed(2)} RSD\n`)
-    w.document.write(`----------------------------\n`)
-    w.document.write(`Hvala!\n`)
-    w.document.write(`</pre>`)
-    w.print(); w.close()
+    const css = buildPrintCSS()
+    const html = `
+      <!doctype html><html><head><meta charset="utf-8">${css}</head>
+      <body><div class="receipt">
+        <div class="center bold">PRESEK ZA DAN</div>
+        <div class="center small muted">${d.day}</div>
+        <div class="hr"></div>
+        <div class="row"><div>Ukupno artikala</div><div class="bold">${d.count}</div></div>
+        <div class="row"><div>Ukupan promet</div><div class="bold">${d.total.toFixed(2)} RSD</div></div>
+        <div class="hr"></div>
+        <div class="center small">Hvala!</div>
+      </div>
+      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 50) };</script>
+      </body></html>
+    `
+    openPrint(html)
   }
 
   function printWeek(){
-    const w = window.open('', 'PRINT', 'height=600,width=400')
-    w.document.write(`<pre class="receipt" style="font-family:monospace">`)
-    w.document.write(`*** PRESEK POSLEDNJIH 7 DANA ***\n`)
-    last7.forEach(d=>{
-      w.document.write(`${d.day} -> ${d.total.toFixed(2)} RSD (${d.count} art)\n`)
-    })
-    w.document.write(`----------------------------\n`)
-    w.document.write(`Ukupno 7 dana: ${sumLast7.toFixed(2)} RSD\n`)
-    w.document.write(`</pre>`)
-    w.print(); w.close()
+    const css = buildPrintCSS()
+    const rows = last7.map(d=>`<div class="row"><div>${d.day}</div><div>${d.total.toFixed(2)} RSD</div></div>`).join('')
+    const html = `
+      <!doctype html><html><head><meta charset="utf-8">${css}</head>
+      <body><div class="receipt">
+        <div class="center bold">PRESEK POSLEDNJIH 7 DANA</div>
+        <div class="hr"></div>
+        ${rows || '<div class="small muted">Nema podataka.</div>'}
+        <div class="hr"></div>
+        <div class="row"><div class="bold">Ukupno 7 dana</div><div class="bold">${sumLast7.toFixed(2)} RSD</div></div>
+      </div>
+      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 50) };</script>
+      </body></html>
+    `
+    openPrint(html)
   }
 
   return (
