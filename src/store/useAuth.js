@@ -1,24 +1,69 @@
-import { create } from 'zustand'
+// src/store/useAuth.js
+import { useEffect, useState, useCallback } from 'react'
 
-const ADMIN = { username: 'admin', password: 'robertobadjo' }
+// Kredencijali (lokalni, bez servera)
+const USERNAME = 'admin'
+const PASSWORD = '100100'
+const LS_KEY = 'ccm_pos_user'
 
-const useAuth = create((set) => ({
-  user: (()=> {
-    const s = localStorage.getItem('auth_user')
-    return s ? JSON.parse(s) : null
-  })(),
-  login: (username, password) => {
-    if (username === ADMIN.username && password === ADMIN.password){
-      localStorage.setItem('auth_user', JSON.stringify({ username }))
-      set({ user: { username } })
-      return { ok: true }
+// ---- Globalno stanje i pretplatnici (shared između svih komponenti) ----
+let currentUser = null
+const listeners = new Set()
+
+function notify() {
+  for (const cb of listeners) cb(currentUser)
+}
+
+function setCurrentUser(next) {
+  currentUser = next
+  try {
+    if (next) localStorage.setItem(LS_KEY, JSON.stringify(next))
+    else localStorage.removeItem(LS_KEY)
+  } catch {}
+  notify()
+}
+
+// Pokušaj da inicijalno učita iz localStorage (samo jednom po modulu)
+;(function bootFromStorage(){
+  try {
+    const raw = localStorage.getItem(LS_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && parsed.username) currentUser = parsed
     }
-    return { ok: false, error: 'Pogrešni kredencijali' }
-  },
-  logout: () => {
-    localStorage.removeItem('auth_user')
-    set({ user: null })
-  }
-}))
+  } catch {}
+})()
 
-export default useAuth
+export default function useAuth(){
+  const [user, setUser] = useState(currentUser)
+
+  useEffect(()=>{
+    // Pretplata na promene globalnog auth stanja
+    const cb = (u)=> setUser(u)
+    listeners.add(cb)
+    // Sync sa localStorage ako je neko drugi već ulogovao pre mount-a
+    setUser(currentUser)
+
+    return ()=> {
+      listeners.delete(cb)
+    }
+  }, [])
+
+  const login = useCallback((username, password)=>{
+    if (username !== USERNAME){
+      return { ok:false, error:'Nepostojeći korisnik' }
+    }
+    if (password !== PASSWORD){
+      return { ok:false, error:'Pogrešna lozinka' }
+    }
+    const u = { username: USERNAME, loggedInAt: Date.now() }
+    setCurrentUser(u) // obaveštava sve pretplatnike (SideBar, itd.)
+    return { ok:true }
+  },[])
+
+  const logout = useCallback(()=>{
+    setCurrentUser(null) // obaveštava sve pretplatnike
+  },[])
+
+  return { user, login, logout }
+}
