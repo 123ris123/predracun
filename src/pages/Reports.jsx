@@ -5,30 +5,27 @@ import { format } from 'date-fns'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
 function buildPrintCSS(){
+  const SHIFT_MM = 2; // blagi nudge ulevo da se centrirá i na većini termalnih
   return `
     <style>
       @page { size: 80mm auto; margin: 0; }
       html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; }
       * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       .receipt {
-        width: 72mm; margin: 0 auto; padding: 8px 4px 10mm;
+        width: 72mm; margin-left:auto; margin-right:auto; padding: 8px 6px 10mm 6px;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
-        font-size: 12px; line-height: 1.25;
-        background-image: url('/racun_logo.png');
-        background-repeat: no-repeat;
-        background-position: center 92%;
-        background-size: 30mm auto;
+        font-size: 12.5px; line-height: 1.28;
+        transform: translateX(-${SHIFT_MM}mm);
       }
       .center { text-align:center }
       .row { display:flex; justify-content:space-between; gap:8px }
-      .hr { border-top:1px dashed #000; margin:7px 0 }
-      .small { font-size:11px }
+      .hr { border-top:1px dashed #000; margin:8px 0 }
+      .small { font-size:11.5px }
       .bold { font-weight:700 }
       .mono { font-variant-numeric: tabular-nums; }
       .name { flex:1; padding-right:6px }
-      .unit { min-width: 62px; text-align:right }
-      .amt  { min-width: 62px; text-align:right }
-      .logo-top { display:block; margin:0 auto 2px auto; width:32mm; height:auto }
+      .unit { min-width: 64px; text-align:right }
+      .amt  { min-width: 64px; text-align:right }
     </style>
   `
 }
@@ -51,7 +48,6 @@ function groupByDay(rows){
   }
   return Array.from(map.values()).sort((a,b)=>a.day.localeCompare(b.day))
 }
-
 function groupItems(rows){
   const m = new Map()
   for (const r of rows){
@@ -63,14 +59,24 @@ function groupItems(rows){
   }
   return Array.from(m.values()).sort((a,b)=> b.qty - a.qty || b.amt - a.amt)
 }
+function renderGroupedRows(grouped){
+  return grouped.map(it => {
+    const avg = it.qty ? (it.amt / it.qty) : 0
+    return `
+      <div class="row mono">
+        <div class="name">${it.name}</div>
+        <div class="unit">${it.qty}× ${avg.toFixed(2)}</div>
+        <div class="amt">${it.amt.toFixed(2)} RSD</div>
+      </div>
+    `
+  }).join('')
+}
 
 export default function Reports(){
   const [sales, setSales] = useState([])
   const [openTotals, setOpenTotals] = useState({ total:0, count:0, byTable:[] })
 
-  useEffect(()=>{
-    reload()
-  },[])
+  useEffect(()=>{ reload() },[])
 
   async function reload(){
     const s = await db.table('sales').toArray()
@@ -104,19 +110,6 @@ export default function Reports(){
   const last7 = byDay.slice(-7)
   const sumLast7 = last7.reduce((s,d)=>s+d.total,0)
 
-  function renderGroupedRows(grouped){
-    return grouped.map(it => {
-      const avg = it.qty ? (it.amt / it.qty) : 0
-      return `
-        <div class="row mono">
-          <div class="name">${it.name}</div>
-          <div class="unit">${it.qty}× ${avg.toFixed(2)}</div>
-          <div class="amt">${it.amt.toFixed(2)} RSD</div>
-        </div>
-      `
-    }).join('')
-  }
-
   function printDay(d){
     const itemsOfDay = sales.filter(s => s.day === d.day)
     const grouped = groupItems(itemsOfDay)
@@ -125,10 +118,8 @@ export default function Reports(){
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
       <body><div class="receipt">
-        <img src="/racun_logo.png" class="logo-top" alt="logo" />
         <div class="center bold">PRESEK ZA DAN</div>
         <div class="center small">Datum preseka: ${d.day}</div>
-        <div class="center small">Datum štampe: ${formatDateTime(new Date())}</div>
         <div class="hr"></div>
         <div class="row mono"><div>Ukupan promet</div><div class="bold">${d.total.toFixed(2)} RSD</div></div>
         <div class="row mono"><div>Ukupno artikala</div><div class="bold">${d.count}</div></div>
@@ -136,6 +127,9 @@ export default function Reports(){
         <div class="center small bold">ARTIKLI</div>
         <div class="row small mono" style="opacity:.9"><div class="name">Artikal</div><div class="unit">Kol × Cena</div><div class="amt">Ukupno</div></div>
         ${rows || '<div class="small" style="opacity:.8">Nema podataka o artiklima.</div>'}
+        <div class="hr"></div>
+        <div class="center small mono">--------------</div>
+        <div class="center small mono">Štampano: ${formatDateTime(new Date())}</div>
       </div>
       <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 80) };</script>
       </body></html>
@@ -153,9 +147,7 @@ export default function Reports(){
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
       <body><div class="receipt">
-        <img src="/racun_logo.png" class="logo-top" alt="logo" />
         <div class="center bold">PRESEK POSLEDNJIH 7 DANA</div>
-        <div class="center small">Datum štampe: ${formatDateTime(new Date())}</div>
         <div class="hr"></div>
         ${rowsDays || '<div class="small" style="opacity:.8">Nema podataka.</div>'}
         <div class="hr"></div>
@@ -164,6 +156,9 @@ export default function Reports(){
         <div class="center small bold">ARTIKLI (UKUPNO)</div>
         <div class="row small mono" style="opacity:.9"><div class="name">Artikal</div><div class="unit">Kol × Cena</div><div class="amt">Ukupno</div></div>
         ${rowsItems || '<div class="small" style="opacity:.8">Nema podataka o artiklima.</div>'}
+        <div class="hr"></div>
+        <div class="center small mono">--------------</div>
+        <div class="center small mono">Štampano: ${formatDateTime(new Date())}</div>
       </div>
       <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 80) };</script>
       </body></html>
