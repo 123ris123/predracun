@@ -1,23 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import { db, seedIfEmpty, ensureCategoryIcons, resetAndImport } from '../store/db.js'
-import { Card, Button, Input, Label, Badge } from '../components/UI.jsx'
+import { Card, Button, Badge } from '../components/UI.jsx'
 import useAuth from '../store/useAuth.js'
 import * as Icons from 'lucide-react'
 
-const GRID_W = 12
-const GRID_H = 7
+/* Veličina stola i UI */
+const TABLE_SIZE = 32
 
 const ICON_CHOICES = [
   'Coffee','Beer','Wine','Martini','GlassWater','CupSoda','Utensils',
   'Pizza','IceCream','Cake','Cookie','Croissant','Soup','Salad','Sandwich',
-  'Zap','Apple','Snowflake','Plus'
+  'Zap','Apple','Snowflake','CupSoda','Mug','Cookie','Cherry','Fish','Drumstick',
 ]
 
 function getIconByName(name){
   return Icons[name] || Icons.Utensils
 }
 
-// CSV parser (autodetect , ili ;) + navodnici
+/* CSV parser (auto , ili ;) + navodnici */
 function parseCSV(text){
   const firstLine = (text.split(/\r?\n/)[0] || '')
   const delim = (firstLine.match(/;/g)?.length || 0) > (firstLine.match(/,/g)?.length || 0) ? ';' : ','
@@ -26,18 +26,12 @@ function parseCSV(text){
   if (lines.length === 0) return rows
 
   const parseLine = (line) => {
-    const out = []
-    let cur = ''
-    let inQ = false
+    const out = []; let cur = ''; let inQ = false
     for (let i=0;i<line.length;i++){
       const ch = line[i]
-      if (ch === '"'){
-        if (inQ && line[i+1] === '"'){ cur += '"'; i++ } else { inQ = !inQ }
-      } else if (ch === delim && !inQ){
-        out.push(cur); cur = ''
-      } else {
-        cur += ch
-      }
+      if (ch === '"'){ if (inQ && line[i+1] === '"'){ cur += '"'; i++ } else { inQ = !inQ } }
+      else if (ch === delim && !inQ){ out.push(cur); cur = '' }
+      else { cur += ch }
     }
     out.push(cur)
     return out.map(s=>s.trim())
@@ -48,7 +42,7 @@ function parseCSV(text){
   const idxName = header.findIndex(h => h.trim().toLowerCase() === 'naziv artikla')
   const idxPrice = header.findIndex(h => h.toLowerCase().includes('cena'))
   if (idxCat === -1 || idxName === -1 || idxPrice === -1){
-    throw new Error('CSV zaglavlje nije prepoznato. Očekujem: Kategorija, Naziv artikla, Cena (RSD), [Normativ]')
+    throw new Error('CSV zaglavlje nije prepoznato. Očekujem: Kategorija, Naziv artikla, Cena (RSD)')
   }
 
   for (let i=1;i<lines.length;i++){
@@ -63,9 +57,11 @@ function parseCSV(text){
   return rows
 }
 
+/* ==================== ADMIN ===================== */
 export default function Admin(){
   const { user } = useAuth()
-  const [tab, setTab] = useState('products')
+  const [tab, setTab] = useState('layout')
+
   const [categories, setCategories] = useState([])
   const [products, setProducts] = useState([])
   const [tables, setTables] = useState([])
@@ -85,66 +81,99 @@ export default function Admin(){
 
   if (!user) {
     return (
-      <div className="max-w-xl mx-auto p-4">
+      <div className="max-w-xl mx-auto p-4 pr-56">
         <Card>
           <div className="text-lg font-semibold">Pristup ograničen</div>
-          <div className="opacity-80">Prijavite se kao admin da biste uređivali artikle, kategorije i stolove.</div>
+          <div className="opacity-80">Prijavite se kao admin da biste uređivali artikle, kategorije, stolove i račune.</div>
         </Card>
       </div>
     )
   }
 
   return (
-    <div className="max-w-7xl mx-auto p-4 space-y-4">
+    <div className="p-4 pr-56 space-y-4">
       <div className="flex flex-wrap gap-2">
         <Button className={tab==='products'?'opacity-100':'opacity-60'} onClick={()=>setTab('products')}>Proizvodi</Button>
         <Button className={tab==='categories'?'opacity-100':'opacity-60'} onClick={()=>setTab('categories')}>Kategorije</Button>
         <Button className={tab==='layout'?'opacity-100':'opacity-60'} onClick={()=>setTab('layout')}>Raspored</Button>
+        <Button className={tab==='receipts'?'opacity-100':'opacity-60'} onClick={()=>setTab('receipts')}>Računi</Button>
       </div>
 
       {tab==='categories' && <CategoriesTab categories={categories} onChange={reloadAll}/>}
-      {tab==='products' && <ProductsTab onChange={reloadAll} categories={categories} products={products}/>}
+      {tab==='products' && <ProductsTab categories={categories} products={products} onChange={reloadAll} />}
       {tab==='layout'    && <LayoutTab tables={tables} onChange={reloadAll}/>}
+      {tab==='receipts'  && <ReceiptsTab />}
     </div>
   )
 }
 
-/* -------------------- KATEGORIJE --------------------- */
+/* -------------------- KATEGORIJE (CRUD) --------------------- */
 function CategoriesTab({ categories, onChange }){
-  async function changeIcon(catId, iconName){
-    await db.table('categories').update(catId, { icon: iconName })
+  const [name, setName] = useState('')
+  const [sort, setSort] = useState( (categories.at(-1)?.sort ?? 0) + 1 )
+  const [icon, setIcon] = useState('Utensils')
+
+  async function addCat(){
+    if (!name.trim()) return
+    await db.table('categories').add({ name: name.trim(), sort: Number(sort)||0, icon })
+    setName(''); setSort((Number(sort)||0)+1)
     onChange()
   }
+  async function delCat(id){
+    if (!confirm('Obrisati kategoriju? (Proizvodi zadržaće categoryId, proveri nakon brisanja)')) return
+    await db.table('categories').delete(id)
+    onChange()
+  }
+  async function updateCat(c){
+    await db.table('categories').update(c.id, { name: c.name, sort: c.sort, icon: c.icon })
+    onChange()
+  }
+
   return (
     <div className="grid lg:grid-cols-2 gap-4">
+      <Card>
+        <div className="text-lg font-semibold mb-3">Dodaj kategoriju</div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Naziv" className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900"/>
+          <input value={sort} onChange={e=>setSort(e.target.value)} type="number" placeholder="Sort" className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900"/>
+          <IconPicker value={icon} onPick={setIcon}/>
+        </div>
+        <div className="mt-3">
+          <Button onClick={addCat}>Sačuvaj</Button>
+        </div>
+      </Card>
+
       <Card>
         <div className="text-lg font-semibold mb-3">Sve kategorije</div>
         <div className="space-y-2">
           {categories.map(c=>{
             const Icon = getIconByName(c.icon)
             return (
-              <div key={c.id} className="flex items-center justify-between border border-neutral-200 dark:border-neutral-800 rounded-xl px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <Icon size={18} className="opacity-80"/>
-                  <div className="font-medium">{c.name}</div>
-                  <Badge className="ml-2">#{c.sort}</Badge>
-                </div>
-                <IconPickerButton value={c.icon} onPick={(name)=>changeIcon(c.id, name)} />
+              <div key={c.id} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 border border-neutral-200 dark:border-neutral-800 rounded-xl px-3 py-2">
+                <input
+                  defaultValue={c.name}
+                  onBlur={e=>updateCat({ ...c, name: e.target.value })}
+                  className="px-2 py-1 rounded-lg border bg-white dark:bg-neutral-900"
+                />
+                <input
+                  type="number"
+                  defaultValue={c.sort}
+                  onBlur={e=>updateCat({ ...c, sort: Number(e.target.value)||0 })}
+                  className="w-20 px-2 py-1 rounded-lg border bg-white dark:bg-neutral-900 text-right"
+                />
+                <IconPicker value={c.icon} onPick={(name)=>updateCat({ ...c, icon: name })}/>
+                <button onClick={()=>delCat(c.id)} className="px-3 py-1.5 rounded-lg bg-red-100 hover:bg-red-200 text-red-700">Obriši</button>
               </div>
             )
           })}
           {categories.length===0 && <div className="opacity-70">Nema kategorija.</div>}
         </div>
       </Card>
-      <Card>
-        <div className="text-lg font-semibold mb-3">Napomena</div>
-        <p className="opacity-80 text-sm">Ikonice možeš menjati klikom na biranje ikona. Kategorije nastaju automatski prilikom uvoza CSV-a na osnovu naziva/kategorije iz fajla.</p>
-      </Card>
     </div>
   )
 }
 
-function IconPickerButton({ value, onPick }){
+function IconPicker({ value, onPick }){
   const [open, setOpen] = useState(false)
   const Icon = getIconByName(value)
   return (
@@ -153,13 +182,13 @@ function IconPickerButton({ value, onPick }){
         <span className="inline-flex items-center gap-2"><Icon size={18}/>{value}</span>
       </button>
       {open && (
-        <div className="absolute z-10 mt-2 w-72 max-h-72 overflow-auto p-2 rounded-xl border bg-white dark:bg-neutral-900 shadow">
-          <div className="grid grid-cols-4 gap-2">
+        <div className="absolute z-10 mt-2 w-80 max-h-80 overflow-auto p-2 rounded-xl border bg-white dark:bg-neutral-900 shadow">
+          <div className="grid grid-cols-5 gap-2">
             {ICON_CHOICES.map(name=>{
               const I = getIconByName(name)
               return (
                 <button key={name} onClick={()=>{ onPick(name); setOpen(false) }}
-                        className={`flex flex-col items-center gap-1 p-2 rounded-lg border hover:border-brand transition`}>
+                        className="flex flex-col items-center gap-1 p-2 rounded-lg border hover:border-brand transition">
                   <I size={20}/><span className="text-[11px] opacity-80">{name}</span>
                 </button>
               )
@@ -171,10 +200,31 @@ function IconPickerButton({ value, onPick }){
   )
 }
 
-/* -------------------- PROIZVODI + RESET & IMPORT CSV --------------------- */
-function ProductsTab({ onChange, categories, products }){
+/* -------------------- PROIZVODI (CRUD) --------------------- */
+function ProductsTab({ categories, products, onChange }){
+  const [name, setName] = useState('')
+  const [price, setPrice] = useState('')
+  const [catId, setCatId] = useState(categories[0]?.id || null)
   const [csvFile, setCsvFile] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [q, setQ] = useState('')
+
+  async function addProd(){
+    if (!name.trim() || !catId) return
+    const p = Number(price) || 0
+    await db.table('products').add({ name: name.trim(), price: p, categoryId: catId })
+    setName(''); setPrice('')
+    onChange()
+  }
+  async function updateProd(p){
+    await db.table('products').update(p.id, { name: p.name, price: Number(p.price)||0, categoryId: Number(p.categoryId)||null })
+    onChange()
+  }
+  async function delProd(id){
+    if (!confirm('Obrisati proizvod?')) return
+    await db.table('products').delete(id)
+    onChange()
+  }
 
   async function handleResetAndImport(){
     if (!csvFile){ alert('Izaberite CSV fajl.'); return }
@@ -183,9 +233,9 @@ function ProductsTab({ onChange, categories, products }){
     try {
       const text = await csvFile.text()
       const rows = parseCSV(text)
-      await resetAndImport(rows) // pametno kategorizuje
+      await resetAndImport(rows)
       onChange()
-      alert('Uvoz gotov: artikli i kategorije su postavljeni.')
+      alert('Uvoz gotov.')
     } catch (e) {
       console.error(e)
       alert('Greška pri uvozu: ' + e.message)
@@ -195,21 +245,36 @@ function ProductsTab({ onChange, categories, products }){
     }
   }
 
+  const filtered = useMemo(()=>{
+    const qq = q.trim().toLowerCase()
+    if (!qq) return products
+    return products.filter(p => p.name.toLowerCase().includes(qq))
+  },[products, q])
+
   return (
     <div className="grid lg:grid-cols-2 gap-4">
       <Card>
-        <div className="text-lg font-semibold mb-3">Reset &amp; Import iz CSV</div>
-        <p className="text-sm opacity-80 mb-2">
-          Ubaci tvoj fajl <b>CaffeClubM Artikli i Normativi.csv</b>. Ignorišemo “Normativ”; bitne kolone su:
-          <b> Kategorija, Naziv artikla, Cena (RSD)</b>. Ako “Kategorija” nije dobra/prazna, sistem je određuje po nazivu artikla.
-        </p>
+        <div className="text-lg font-semibold mb-3">Dodaj proizvod</div>
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Naziv artikla" className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900 sm:col-span-2"/>
+          <input value={price} onChange={e=>setPrice(e.target.value)} type="number" placeholder="Cena (RSD)" className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900"/>
+          <select value={catId ?? ''} onChange={e=>setCatId(Number(e.target.value)||null)} className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900">
+            <option value="">Kategorija…</option>
+            {categories.map(c=> <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div className="mt-3 flex gap-2">
+          <Button onClick={addProd}>Sačuvaj</Button>
+        </div>
+
+        <div className="mt-6 text-sm font-semibold">Masovni uvoz (CSV)</div>
         <input
           type="file" accept=".csv"
           onChange={e=>setCsvFile(e.target.files?.[0] ?? null)}
-          className="block w-full text-sm file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border file:border-neutral-300 dark:file:border-neutral-700 file:bg-white dark:file:bg-neutral-800 file:text-current"
+          className="block w-full text-sm file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border file:border-neutral-300 dark:file:border-neutral-700 file:bg-white dark:file:bg-neutral-800 file:text-current mt-1"
           disabled={busy}
         />
-        <div className="mt-3 flex gap-2">
+        <div className="mt-2">
           <Button onClick={handleResetAndImport} disabled={busy || !csvFile}>
             {busy ? 'Uvozim…' : 'Resetuj i uvezi CSV'}
           </Button>
@@ -217,68 +282,107 @@ function ProductsTab({ onChange, categories, products }){
       </Card>
 
       <Card>
-        <div className="text-lg font-semibold mb-3">Trenutni proizvodi</div>
-        <div className="grid sm:grid-cols-2 gap-2 max-h-[60vh] overflow-auto pr-1">
-          {products.map(p=>{
-            const c = categories.find(x=>x.id===p.categoryId)
-            const Icon = getIconByName(c?.icon)
+        <div className="text-lg font-semibold mb-3">Svi proizvodi</div>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Pretraga…" className="mb-2 w-full px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900"/>
+        <div className="space-y-2 max-h-[60vh] overflow-auto pr-1">
+          {filtered.map(p=>{
             return (
-              <div key={p.id} className="flex items-center justify-between border rounded-xl px-3 py-2">
-                <div className="flex items-center gap-2">
-                  {Icon && <Icon size={16} className="opacity-70" />}
-                  <div>
-                    <div className="font-medium">{p.name}</div>
-                    <div className="text-xs opacity-70">{c?.name ?? '—'}</div>
-                  </div>
-                </div>
-                <div className="font-semibold">{(p.price ?? 0).toFixed(2)} RSD</div>
+              <div key={p.id} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 border border-neutral-200 dark:border-neutral-800 rounded-xl px-3 py-2">
+                <input defaultValue={p.name} onBlur={e=>updateProd({ ...p, name: e.target.value })} className="px-2 py-1 rounded-lg border bg-white dark:bg-neutral-900"/>
+                <input type="number" defaultValue={p.price} onBlur={e=>updateProd({ ...p, price: Number(e.target.value)||0 })} className="w-28 px-2 py-1 rounded-lg border bg-white dark:bg-neutral-900 text-right"/>
+                <select defaultValue={p.categoryId ?? ''} onChange={e=>updateProd({ ...p, categoryId: Number(e.target.value)||null })} className="px-2 py-1 rounded-lg border bg-white dark:bg-neutral-900">
+                  <option value="">—</option>
+                  {categories.map(c=> <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <button onClick={()=>delProd(p.id)} className="px-3 py-1.5 rounded-lg bg-red-100 hover:bg-red-200 text-red-700">Obriši</button>
               </div>
             )
           })}
-          {products.length===0 && <div className="opacity-60">Nema proizvoda — uvezite CSV.</div>}
+          {filtered.length===0 && <div className="opacity-70">Nema proizvoda.</div>}
         </div>
       </Card>
     </div>
   )
 }
 
-/* -------------------- RASPORED (isti grid kao front) --------------------- */
+/* -------------------- RASPORED: pixel-perfect + ista pozadina kao u mapi stolova --------------------- */
 function LayoutTab({ tables, onChange }){
+  const stageRef = useRef(null)
   const [selectedId, setSelectedId] = useState(null)
+  const [dragId, setDragId] = useState(null)
 
-  async function placeAtCell(col, row){
-    if (!selectedId) return
-    const t = tables.find(x=>x.id===selectedId)
-    if (!t) return
-    const x = Math.max(0, Math.min(GRID_W-1, col))
-    const y = Math.max(0, Math.min(GRID_H-1, row))
-    await db.table('posTables').update(t.id, { x, y })
+  function toPct(clientX, clientY){
+    const host = stageRef.current
+    if (!host) return { xpct: 0, ypct: 0 }
+    const rect = host.getBoundingClientRect()
+    // centriramo sto na prst: oduzmemo pola TABLE_SIZE
+    const x = clientX - rect.left - TABLE_SIZE/2
+    const y = clientY - rect.top  - TABLE_SIZE/2
+    const xpct = Math.min(1, Math.max(0, x / Math.max(1, rect.width  - TABLE_SIZE)))
+    const ypct = Math.min(1, Math.max(0, y / Math.max(1, rect.height - TABLE_SIZE)))
+    return { xpct: +xpct.toFixed(4), ypct: +ypct.toFixed(4) }
+  }
+
+  async function setTablePct(id, xpct, ypct){
+    await db.table('posTables').update(id, { xpct, ypct })
     onChange()
   }
 
   function handleGridClick(e){
-    const host = e.currentTarget
-    const rect = host.getBoundingClientRect()
-    const cellW = rect.width / GRID_W
-    const cellH = rect.height / GRID_H
-    const col = Math.floor((e.clientX - rect.left) / cellW)
-    const row = Math.floor((e.clientY - rect.top) / cellH)
-    placeAtCell(col, row)
+    if (!selectedId) return
+    const { xpct, ypct } = toPct(e.clientX, e.clientY)
+    setTablePct(selectedId, xpct, ypct)
+  }
+
+  function handlePointerDown(e, id){
+    e.preventDefault()
+    setSelectedId(id)
+    setDragId(id)
+
+    const move = (ev)=>{
+      if (dragId === null) return
+      const ptX = ev.clientX ?? (ev.touches?.[0]?.clientX)
+      const ptY = ev.clientY ?? (ev.touches?.[0]?.clientY)
+      if (ptX==null || ptY==null) return
+      const { xpct, ypct } = toPct(ptX, ptY)
+      setTablePct(id, xpct, ypct)
+    }
+    const up = ()=>{
+      setDragId(null)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('touchmove', move)
+      window.removeEventListener('touchend', up)
+    }
+    window.addEventListener('pointermove', move, { passive: true })
+    window.addEventListener('pointerup', up, { passive: true })
+    window.addEventListener('touchmove', move, { passive: true })
+    window.addEventListener('touchend', up, { passive: true })
+  }
+
+  async function addTable(){
+    const name = `Sto ${tables.length + 1}`
+    await db.table('posTables').add({ name, xpct: 0.05, ypct: 0.05 })
+    onChange()
   }
 
   return (
-    <div className="grid lg:grid-cols-[300px,1fr] gap-4">
+    <div className="grid lg:grid-cols-[280px,1fr] gap-4">
       <Card>
         <div className="text-lg font-semibold mb-3">Stolovi</div>
+        <div className="mb-2">
+          <Button onClick={addTable}>+ Dodaj sto</Button>
+        </div>
         <div className="space-y-2 max-h-[60vh] overflow-auto pr-1">
           {tables.map(t=>{
             const active = selectedId === t.id
+            const label = (t.name || `Sto ${t.id}`)
             return (
               <button key={t.id} onClick={()=>setSelectedId(t.id)}
                 className={`w-full text-left px-3 py-2 rounded-xl border transition
                   ${active ? 'border-brand bg-brand/10' : 'border-neutral-200 dark:border-neutral-800 hover:border-brand'}`}>
-                <div className="font-medium">{t.name}</div>
-                <div className="text-xs opacity-70">({t.x ?? 0},{t.y ?? 0})</div>
+                <div className="font-medium">{label}</div>
+                <div className="text-xs opacity-70">x:{(t.xpct??0).toFixed?.(2) ?? '—'} y:{(t.ypct??0).toFixed?.(2) ?? '—'}</div>
               </button>
             )
           })}
@@ -287,40 +391,160 @@ function LayoutTab({ tables, onChange }){
       </Card>
 
       <Card>
-        <div className="text-lg font-semibold mb-3">Raspored (klikni na mrežu da postaviš izabrani sto)</div>
-        <div
-          className="relative rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 select-none"
-          style={{height: 36*GRID_H + 28}}
-          onClick={handleGridClick}
-        >
+        <div className="text-lg font-semibold mb-3">Raspored — isto kao na mapi stolova (pixel perfect)</div>
+
+        {/* Identicna pozadina kao TableMap */}
+        <div className="relative rounded-2xl overflow-hidden" style={{height: 'calc(100svh - 200px)'}}>
+          <div className="tables-area"><div className="tables-area-overlay" /></div>
+
+          {/* Stage za rad */}
           <div
-            className="relative w-full h-full"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: `repeat(${GRID_W}, 1fr)`,
-              gridTemplateRows: `repeat(${GRID_H}, 1fr)`,
-              gap: '6px',
-            }}
+            ref={stageRef}
+            className="tables-stage select-none"
+            onClick={handleGridClick}
           >
-            {tables.map(t=>{
-              const col = Math.min(Math.max((t.x ?? 0), 0), GRID_W-1) + 1
-              const row = Math.min(Math.max((t.y ?? 0), 0), GRID_H-1) + 1
-              const active = selectedId === t.id
-              return (
-                <div key={t.id}
-                  className={`rounded-xl border aspect-square flex items-center justify-center transition
-                    ${active ? 'border-brand bg-brand/10' : 'border-neutral-300 hover:border-brand dark:border-neutral-700'}
-                  `}
-                  style={{ gridColumnStart: col, gridRowStart: row }}
-                >
-                  <span className="text-sm font-semibold">{t.name}</span>
-                </div>
-              )
-            })}
+            {/* Stolovi */}
+            <div className="relative w-full h-full">
+              {tables.map(t=>{
+                let xpct = typeof t.xpct === 'number' ? t.xpct : (typeof t.x==='number' ? Math.min(1, Math.max(0, (t.x+0.5)/24)) : 0.05)
+                let ypct = typeof t.ypct === 'number' ? t.ypct : (typeof t.y==='number' ? Math.min(1, Math.max(0, (t.y+0.5)/14)) : 0.05)
+                const active = selectedId === t.id
+                return (
+                  <div
+                    key={t.id}
+                    onPointerDown={(e)=>handlePointerDown(e, t.id)}
+                    onTouchStart={(e)=>handlePointerDown(e, t.id)}
+                    className={`absolute rounded-xl border flex items-center justify-center select-none cursor-grab active:cursor-grabbing
+                      ${active ? 'border-brand bg-brand/10' : 'border-neutral-300 hover:border-brand dark:border-neutral-700'}
+                    `}
+                    style={{
+                      left: `calc(${(xpct*100).toFixed(3)}% - ${TABLE_SIZE/2}px)`,
+                      top:  `calc(${(ypct*100).toFixed(3)}% - ${TABLE_SIZE/2}px)`,
+                      width: TABLE_SIZE, height: TABLE_SIZE
+                    }}
+                  >
+                    <span className="text-[11px] font-semibold">{t.name || `Sto ${t.id}`}</span>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         </div>
-        <div className="mt-2 text-sm opacity-80">1) Izaberi sto sa leve strane. 2) Klik na ćeliju da ga postaviš. Pozicija se čuva odmah.</div>
+
+        <div className="mt-2 text-sm opacity-80">
+          Savet: dodirni prazno mesto da postaviš izabrani sto, ili prevuci postojeći sto prstom. Pozicija se čuva u procentima — isto se prikazuje na ekranu sa stolovima.
+        </div>
       </Card>
     </div>
+  )
+}
+
+/* -------------------- RAČUNI (arhiva predračuna) — pregled, pretraga, brisanje --------------------- */
+function ReceiptsTab(){
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [tableId, setTableId] = useState('')
+  const [q, setQ] = useState('')
+  const [min, setMin] = useState('')
+  const [max, setMax] = useState('')
+
+  const [rows, setRows] = useState([])
+  const [tables, setTables] = useState([])
+
+  useEffect(()=>{ (async ()=>{
+    const t = await db.table('posTables').toArray()
+    setTables(t)
+    await runSearch()
+  })() },[])
+
+  async function runSearch(){
+    // čitamo sve arhivirane i filtriramo u memoriji (dataset je lokalni)
+    let list = await db.table('archivedOrders').reverse().sortBy('createdAt') // najnoviji prvi
+    // filter: datumi
+    if (from){
+      const f = new Date(from).toISOString()
+      list = list.filter(o => o.createdAt >= f)
+    }
+    if (to){
+      const t = new Date(to)
+      t.setDate(t.getDate()+1) // inclusive
+      const tIso = t.toISOString()
+      list = list.filter(o => o.createdAt < tIso)
+    }
+    if (tableId){
+      const tid = Number(tableId)
+      list = list.filter(o => (o.tableId ?? 0) === tid)
+    }
+    // učitaj stavke i total/tekst
+    const out = []
+    for (const o of list){
+      const its = await db.table('archivedItems').where('orderId').equals(o.id).toArray()
+      const total = its.reduce((s,i)=> s + (i.qty * (i.priceEach ?? 0)), 0)
+      const text = its.map(i => `${i.name ?? ''} x${i.qty}`).join(', ')
+      out.push({
+        ...o, items: its, total, text,
+        date: new Date(o.createdAt)
+      })
+    }
+    // filter: q/min/max
+    const qq = q.trim().toLowerCase()
+    let f = out
+    if (qq) f = f.filter(r => r.text.toLowerCase().includes(qq))
+    const minN = min ? Number(min) : null
+    const maxN = max ? Number(max) : null
+    if (minN != null) f = f.filter(r => r.total >= minN)
+    if (maxN != null) f = f.filter(r => r.total <= maxN)
+
+    setRows(f)
+  }
+
+  async function removeReceipt(id){
+    if (!confirm('Obrisati ovaj račun iz arhive? (biće uklonjen i iz preseka)')) return
+    await db.table('archivedItems').where('orderId').equals(id).delete()
+    await db.table('archivedOrders').delete(id)
+    await runSearch()
+  }
+
+  return (
+    <Card>
+      <div className="text-lg font-semibold mb-3">Računi (arhiva predračuna)</div>
+      <div className="grid md:grid-cols-6 gap-2">
+        <input type="date" value={from} onChange={e=>setFrom(e.target.value)} className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900" />
+        <input type="date" value={to} onChange={e=>setTo(e.target.value)} className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900" />
+        <select value={tableId} onChange={e=>setTableId(e.target.value)} className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900">
+          <option value="">Sto (svi)</option>
+          {tables.map(t=> <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Tekst stavki…" className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900" />
+        <input type="number" value={min} onChange={e=>setMin(e.target.value)} placeholder="Min RSD" className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900" />
+        <input type="number" value={max} onChange={e=>setMax(e.target.value)} placeholder="Max RSD" className="px-3 py-2 rounded-xl border bg-white dark:bg-neutral-900" />
+      </div>
+      <div className="mt-2">
+        <Button onClick={runSearch}>Pretraži</Button>
+      </div>
+
+      <div className="mt-4 space-y-2 max-h-[60vh] overflow-auto pr-1">
+        {rows.map(r=>{
+          const dateStr = r.date.toLocaleString()
+          const tableName = r.tableId ? (tables.find(t=>t.id===r.tableId)?.name ?? `Sto ${r.tableId}`) : 'Brzo kucanje'
+          return (
+            <div key={r.id} className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-3">
+              <div className="flex flex-wrap items-center gap-2 justify-between">
+                <div className="font-semibold">{tableName}</div>
+                <div className="text-sm opacity-80">{dateStr}</div>
+              </div>
+              <div className="mt-1 text-sm opacity-90">{r.text || '—'}</div>
+              <div className="mt-2 flex items-center justify-between">
+                <div className="text-lg font-bold">{r.total.toFixed(2)} RSD</div>
+                <div className="flex gap-2">
+                  <Button onClick={()=>removeReceipt(r.id)} className="bg-red-600 hover:bg-red-700">Obriši</Button>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+        {rows.length===0 && <div className="opacity-70">Nema rezultata za dati filter.</div>}
+      </div>
+    </Card>
   )
 }

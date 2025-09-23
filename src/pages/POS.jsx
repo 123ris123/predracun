@@ -41,7 +41,6 @@ export default function POS(){
     if (!quickMode){
       let o = await db.table('orders').where({ tableId, status: 'open' }).first()
       if (!o){
-        // ako je nekad već štampan predračun i vraćen, kreira se novo "open" stanje
         const id = await db.table('orders').add({ tableId, status: 'open', createdAt: new Date().toISOString() })
         o = await db.table('orders').get(id)
       }
@@ -109,27 +108,23 @@ export default function POS(){
     }
 
     if (quickMode){
-      // Napravi privremeni order, ubaci trenutne stavke, arhiviraj, očisti lokalno
+      // napravi privremeni order, arhiviraj, očisti
       const id = await db.table('orders').add({ tableId: null, status: 'open', createdAt: new Date().toISOString() })
-      // snimi stavke privremenog ordera
       for (const it of items){
         await db.table('orderItems').add({ orderId: id, productId: it.productId, qty: it.qty, priceEach: it.priceEach })
       }
-      await archiveOrder(id) // upis u sales + čišćenje orderItems + status printed
+      await archiveOrder(id)
       window.print()
-      setItems([])  // očisti quick listu
+      setItems([])
       return
     }
 
-    // Sto: arhiviraj pa oslobodi sto (brisanje stavki radi archiveOrder)
     await archiveOrder(orderId)
     window.print()
-    // otkucan račun je arhiviran, sto je prazan → nazad na mapu
-    nav('/')
+    nav('/') // posle štampe sto se oslobađa i vraćamo se na mapu
   }
 
   function saveAndBack(){
-    // samo nazad (ne menja status)
     if (!quickMode) return nav('/')
     setItems([])
   }
@@ -152,19 +147,28 @@ export default function POS(){
           {items.length===0 && <div className="opacity-60">Nema stavki. Dodajte sa desne strane.</div>}
         </div>
 
-        <div className="mt-4 border-t border-neutral-200 dark:border-neutral-800 pt-3 flex items-center justify-between">
+        <div className="mt-4 border-t border-neutral-200/70 dark:border-neutral-800 pt-3 flex items-center justify-between">
           <div className="text-lg">Ukupno:</div>
           <div className="text-2xl font-bold">{total.toFixed(2)} RSD</div>
         </div>
 
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button onClick={printAndArchive} className="w-full touch-btn flex items-center justify-center gap-2">
-            <Printer size={18}/> Štampaj predračun
-          </Button>
-          <Button onClick={saveAndBack} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn">
-            Sačuvaj / Nazad
-          </Button>
-        </div>
+        {/* Dugmad — u quick modu prikazujemo SAMO štampu */}
+        {quickMode ? (
+          <div className="mt-3 grid grid-cols-1 gap-2">
+            <Button onClick={printAndArchive} className="w-full touch-btn flex items-center justify-center gap-2">
+              <Printer size={18}/> Štampaj predračun
+            </Button>
+          </div>
+        ) : (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button onClick={printAndArchive} className="w-full touch-btn flex items-center justify-center gap-2">
+              <Printer size={18}/> Štampaj predračun
+            </Button>
+            <Button onClick={saveAndBack} className="w-full bg-neutral-700 hover:bg-neutral-600 touch-btn">
+              Sačuvaj / Nazad
+            </Button>
+          </div>
+        )}
       </Card>
 
       <Card className="order-1 md:order-2">
@@ -190,7 +194,7 @@ export default function POS(){
             <button
               key={p.id}
               onClick={()=>addItem(p)}
-              className="text-left rounded-xl border border-neutral-200 dark:border-neutral-800 p-4 hover:border-brand active:scale-[0.99] transition touch-btn"
+              className="text-left rounded-xl border border-neutral-200/80 dark:border-neutral-800 p-4 hover:border-brand active:scale-[0.99] transition touch-btn bg-[var(--surface)]"
             >
               <div className="font-semibold text-[15px]">{p.name}</div>
               <div className="text-sm opacity-70 mt-1">{p.price.toFixed(2)} RSD</div>
@@ -212,7 +216,7 @@ function TabBtn({active, onClick, children, icon}){
       className={`px-3 py-2 rounded-xl touch-btn text-sm border flex items-center gap-2 transition
         ${active
           ? 'bg-brand/20 border-brand text-neutral-900 dark:text-white'
-          : 'bg-neutral-50 border-neutral-200 hover:border-brand dark:bg-neutral-900 dark:border-neutral-800'
+          : 'bg-[var(--surface)] border-neutral-200/80 hover:border-brand dark:bg-neutral-900 dark:border-neutral-800'
         }`}
     >
       {icon}{children}
@@ -225,15 +229,15 @@ function ItemRow({item, onInc, onDec, products}){
   const name = p?.name ?? 'Artikal'
   const price = item.priceEach ?? p?.price ?? 0
   return (
-    <div className="flex items-center justify-between border border-neutral-200 dark:border-neutral-800 rounded-2xl px-3 py-2 transition">
+    <div className="flex items-center justify-between border border-neutral-200/80 dark:border-neutral-800 rounded-2xl px-3 py-2 transition bg-[var(--surface)]">
       <div>
         <div className="font-medium">{name}</div>
         <div className="text-xs opacity-70">{price.toFixed(2)} RSD</div>
       </div>
       <div className="flex items-center gap-2">
-        <button onClick={onDec} className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:border-neutral-800 touch-btn transition">−</button>
+        <button onClick={onDec} className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-200/80 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:border-neutral-800 touch-btn transition">−</button>
         <div className="w-8 text-center">{item.qty}</div>
-        <button onClick={onInc} className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:border-neutral-800 touch-btn transition">+</button>
+        <button onClick={onInc} className="px-3 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-200/80 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:border-neutral-800 touch-btn transition">+</button>
       </div>
     </div>
   )
