@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* možeš dodati globalne stilove ovde */
+html, body, #root {
+  height: 100%;
+}
