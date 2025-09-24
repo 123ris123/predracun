@@ -1,33 +1,37 @@
-// src/pages/Reports.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { db } from '../store/db.js'
 import { Card, Button } from '../components/UI.jsx'
 import { format } from 'date-fns'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
-/* ====================== RADNI DAN (granica 15:00) ====================== */
-// 00:00–14:59 -> PRETHODNI dan; 15:00–23:59 -> TEKUĆI dan
+/* ====================== RADNI DAN: 15:00 → 14:59 ====================== */
+/* Pravilo:
+   - < 15:00  -> PRETHODNI dan
+   - >= 15:00 -> TEKUĆI dan
+*/
 function ymd(d){
   const y = d.getFullYear()
   const m = String(d.getMonth()+1).padStart(2,'0')
-  const day = String(d.getDate()).padStart(2,'0')
-  return `${y}-${m}-${day}`
+  const dd = String(d.getDate()).padStart(2,'0')
+  return `${y}-${m}-${dd}`
 }
 function businessDayKey(dateLike){
   if (!dateLike) return null
   const d = (dateLike instanceof Date) ? dateLike : new Date(dateLike)
   if (isNaN(d.getTime())) return null
-  if (d.getHours() < 15){
+  const h = d.getHours()
+  if (h < 15){
     const prev = new Date(d)
     prev.setDate(prev.getDate()-1)
     return ymd(prev)
   }
   return ymd(d)
 }
+// Label: D 15:00 – (D+1) 14:59
 function businessDayRangeLabel(dayKey){
   const [Y, M, D] = dayKey.split('-').map(Number)
-  const start = new Date(Y, M-1, D, 15, 0, 0) // dan 15:00
-  const end = new Date(start); end.setDate(end.getDate()+1); end.setHours(14,59,59,999) // sutradan 14:59:59
+  const start = new Date(Y, M-1, D, 15, 0, 0)
+  const end = new Date(start); end.setDate(end.getDate()+1); end.setHours(14,59,59,999)
   return `${format(start, 'yyyy-MM-dd HH:mm')} – ${format(end, 'yyyy-MM-dd HH:mm')}`
 }
 
@@ -58,7 +62,6 @@ function buildPrintCSS(){
   `
 }
 function openPrint(html){
-  // Ako popup bude blokiran, fallback na Blob URL
   let w = null
   try { w = window.open('', 'PRINT', 'width=420,height=600') } catch {}
   if (!w || w.closed) {
@@ -77,14 +80,13 @@ function formatDateTime(d=new Date()){ return d.toLocaleString('sr-RS') }
 function groupByBusinessDay(rows){
   const map = new Map()
   for (const r of rows){
-    // 1) Ako imamo timestamp (_ts ili createdAt) — koristimo njega
-    // 2) Ako nemamo, ali imamo 'day' (YYYY-MM-DD) — pretvaramo u midnight
-    //    što po pravilu (<15h) ide u PRETHODNI radni dan => baš ono što želiš
+    // Ako postoji timestamp (_ts ili createdAt) -> računamo ključ po pravilu 15:00
+    // Ako NEMA timestamp nego samo r.day (string), tretiramo ga kao već izračunat radni dan.
     let key = null
     if (r._ts || r.createdAt) {
       key = businessDayKey(r._ts || r.createdAt)
     } else if (r.day) {
-      key = businessDayKey(`${r.day}T00:00:00`)
+      key = r.day // već je business-day string
     }
     if (!key) continue
 
@@ -125,13 +127,13 @@ function renderGroupedRows(grouped){
 
 /* ====================== KOMPONENTA ====================== */
 export default function Reports(){
-  const [sales, setSales] = useState([]) // normalizovane stavke sa _ts/createdAt ili day
+  const [sales, setSales] = useState([])
   const [openTotals, setOpenTotals] = useState({ total:0, count:0, byTable:[] })
 
   useEffect(()=>{ reload() },[])
 
   async function reload(){
-    // --- 1) Pokušaj rekonstrukciju iz archivedOrders + archivedItems ---
+    // 1) Pokušaj iz archivedOrders + archivedItems
     let reconstructed = []
     try {
       const [archivedOrders, archivedItems] = await Promise.all([
@@ -149,7 +151,6 @@ export default function Reports(){
           itemsByOrder.set(it.orderId, arr)
         }
         for (const o of archivedOrders){
-          // Preferencirani vreme-markeri (štampa/arhiva)
           const orderTs =
               o.archivedAt
            || o.closedAt
@@ -159,7 +160,6 @@ export default function Reports(){
            || o.createdAt
            || o.time
            || null
-
           const its = itemsByOrder.get(o.id) || []
           for (const it of its){
             reconstructed.push({
@@ -169,17 +169,14 @@ export default function Reports(){
               productId: it.productId ?? null,
               qty: Number(it.qty) || 0,
               priceEach: Number(it.priceEach) || 0,
-              _ts: orderTs,   // za business dan
-              // day ne stavljamo ovde — imamo realan timestamp
+              _ts: orderTs
             })
           }
         }
       }
-    } catch {
-      // ako tabele ne postoje, reconstructed ostaje prazan -> fallback niže
-    }
+    } catch {}
 
-    // --- 2) Fallback na sales ako rekonstrukcija nije dala ništa ---
+    // 2) Fallback na sales
     if (!reconstructed.length){
       try {
         const s = await db.table('sales').toArray()
@@ -201,17 +198,15 @@ export default function Reports(){
             qty: Number(row.qty) || 0,
             priceEach: Number(row.priceEach) || 0,
             _ts: ts,
-            day: row.day ?? null // ostavljamo day kao BACKUP za grupisanje ako ts izostane
+            day: row.day ?? null // tretiramo kao već izračunat business day ako nema ts
           }
         })
-      } catch {
-        reconstructed = []
-      }
+      } catch {}
     }
 
     setSales(reconstructed)
 
-    // --- 3) Trenutno otkucano po stolovima (ne menja se) ---
+    // 3) Trenutno otkucano po stolovima
     const [ordersOpen, items] = await Promise.all([
       db.table('orders').where('status').equals('open').toArray().catch(()=>[]),
       db.table('orderItems').toArray().catch(()=>[])
@@ -236,10 +231,10 @@ export default function Reports(){
     setOpenTotals({ total, count, byTable })
   }
 
-  // Grupisanje po radnom danu (15:00) – sada radi i kad postoji samo `day`
+  // Grupisanje po pravilu 15:00
   const byDay = useMemo(()=> groupByBusinessDay(sales), [sales])
 
-  // Današnji radni dan
+  // Današnji radni dan (po istom pravilu)
   const todayBizKey = businessDayKey(new Date())
   const today = byDay.find(d=>d.day===todayBizKey)
 
@@ -249,10 +244,11 @@ export default function Reports(){
 
   function printDay(d){
     const itemsOfDay = sales.filter(s => {
-      const key =
-        (s._ts || s.createdAt) ? businessDayKey(s._ts || s.createdAt)
-        : (s.day ? businessDayKey(`${s.day}T00:00:00`) : null)
-      return key === d.day
+      if (s._ts || s.createdAt) {
+        return businessDayKey(s._ts || s.createdAt) === d.day
+      }
+      if (s.day) return s.day === d.day
+      return false
     })
     const grouped = groupItems(itemsOfDay)
     const css = buildPrintCSS()
@@ -284,10 +280,9 @@ export default function Reports(){
   function printWeek(){
     const daySet = new Set(last7.map(d => d.day))
     const itemsOfWeek = sales.filter(s => {
-      const key =
-        (s._ts || s.createdAt) ? businessDayKey(s._ts || s.createdAt)
-        : (s.day ? businessDayKey(`${s.day}T00:00:00`) : null)
-      return key && daySet.has(key)
+      if (s._ts || s.createdAt) return daySet.has(businessDayKey(s._ts || s.createdAt))
+      if (s.day) return daySet.has(s.day)
+      return false
     })
     const grouped = groupItems(itemsOfWeek)
     const css = buildPrintCSS()
