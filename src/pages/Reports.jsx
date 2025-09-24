@@ -5,40 +5,35 @@ import { Card, Button } from '../components/UI.jsx'
 import { format } from 'date-fns'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
-/* ====================== POMOĆNE – RADNI DAN (granica 15:00) ====================== */
-/** yyyy-MM-dd iz Date (lokalno) */
+/* ====================== RADNI DAN (granica 15:00) ====================== */
+// 00:00–14:59 -> PRETHODNI dan; 15:00–23:59 -> TEKUĆI dan
 function ymd(d){
   const y = d.getFullYear()
   const m = String(d.getMonth()+1).padStart(2,'0')
   const day = String(d.getDate()).padStart(2,'0')
   return `${y}-${m}-${day}`
 }
-/** Granica radnog dana: 15:00.
- * - 00:00–14:59 -> PRETHODNI kalendarski dan
- * - 15:00–23:59 -> TEKUĆI kalendarski dan
- */
 function businessDayKey(dateLike){
+  if (!dateLike) return null
   const d = (dateLike instanceof Date) ? dateLike : new Date(dateLike)
   if (isNaN(d.getTime())) return null
-  const h = d.getHours()
-  if (h < 15){
+  if (d.getHours() < 15){
     const prev = new Date(d)
     prev.setDate(prev.getDate()-1)
     return ymd(prev)
   }
   return ymd(d)
 }
-/** Ljudski label opsega za dati “business day”: [dan 15:00] – [sutradan 14:59] */
 function businessDayRangeLabel(dayKey){
   const [Y, M, D] = dayKey.split('-').map(Number)
-  const start = new Date(Y, M-1, D, 15, 0, 0)
-  const end = new Date(start); end.setDate(end.getDate()+1); end.setHours(14,59,59,999)
+  const start = new Date(Y, M-1, D, 15, 0, 0) // dan 15:00
+  const end = new Date(start); end.setDate(end.getDate()+1); end.setHours(14,59,59,999) // sutradan 14:59:59
   return `${format(start, 'yyyy-MM-dd HH:mm')} – ${format(end, 'yyyy-MM-dd HH:mm')}`
 }
 
-/* ====================== PRINT CSS ====================== */
+/* ====================== PRINT CSS/UTIL ====================== */
 function buildPrintCSS(){
-  const SHIFT_MM = 2; // blagi nudge ulevo da se centrira na većini termalnih
+  const SHIFT_MM = 2
   return `
     <style>
       @page { size: 80mm auto; margin: 0; }
@@ -63,7 +58,15 @@ function buildPrintCSS(){
   `
 }
 function openPrint(html){
-  const w = window.open('', 'PRINT', 'width=420,height=600')
+  // Ako popup bude blokiran, fallback na Blob URL
+  let w = null
+  try { w = window.open('', 'PRINT', 'width=420,height=600') } catch {}
+  if (!w || w.closed) {
+    const blob = new Blob([html], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    window.open(url, '_blank')
+    return
+  }
   w.document.write(html)
   w.document.close()
   w.focus()
@@ -71,16 +74,25 @@ function openPrint(html){
 function formatDateTime(d=new Date()){ return d.toLocaleString('sr-RS') }
 
 /* ====================== GRUPISANJE ====================== */
-/** Grupisanje po radnom danu – koristi _ts (timestamp) ako postoji, inače “day”. */
 function groupByBusinessDay(rows){
   const map = new Map()
   for (const r of rows){
-    const t = r._ts ?? r.createdAt ?? r.timestamp ?? r.time ?? null
-    const key = t ? businessDayKey(t) : (r.day ?? null)
+    // 1) Ako imamo timestamp (_ts ili createdAt) — koristimo njega
+    // 2) Ako nemamo, ali imamo 'day' (YYYY-MM-DD) — pretvaramo u midnight
+    //    što po pravilu (<15h) ide u PRETHODNI radni dan => baš ono što želiš
+    let key = null
+    if (r._ts || r.createdAt) {
+      key = businessDayKey(r._ts || r.createdAt)
+    } else if (r.day) {
+      key = businessDayKey(`${r.day}T00:00:00`)
+    }
     if (!key) continue
+
     const prev = map.get(key) || { day: key, total: 0, count: 0 }
-    prev.total += (r.qty || 0) * (r.priceEach || 0)
-    prev.count += (r.qty || 0)
+    const qty = Number(r.qty) || 0
+    const price = Number(r.priceEach) || 0
+    prev.total += qty * price
+    prev.count += qty
     map.set(key, prev)
   }
   return Array.from(map.values()).sort((a,b)=> a.day.localeCompare(b.day))
@@ -89,9 +101,11 @@ function groupItems(rows){
   const m = new Map()
   for (const r of rows){
     const name = r.name || r.productName || `Artikal${r.productId ? ' #' + r.productId : ''}`
+    const qty = Number(r.qty) || 0
+    const price = Number(r.priceEach) || 0
     const prev = m.get(name) || { name, qty: 0, amt: 0 }
-    prev.qty += (r.qty || 0)
-    prev.amt += (r.qty || 0) * (r.priceEach || 0)
+    prev.qty += qty
+    prev.amt += qty * price
     m.set(name, prev)
   }
   return Array.from(m.values()).sort((a,b)=> b.qty - a.qty || b.amt - a.amt)
@@ -111,39 +125,97 @@ function renderGroupedRows(grouped){
 
 /* ====================== KOMPONENTA ====================== */
 export default function Reports(){
-  const [sales, setSales] = useState([])
+  const [sales, setSales] = useState([]) // normalizovane stavke sa _ts/createdAt ili day
   const [openTotals, setOpenTotals] = useState({ total:0, count:0, byTable:[] })
 
   useEffect(()=>{ reload() },[])
 
   async function reload(){
-    // Sve odštampane stavke
-    const s = await db.table('sales').toArray()
-
-    // Upari sa archivedOrders da bismo imali SIGURAN timestamp (vreme štampe) kad ga nema u sales
-    let ordersById = new Map()
+    // --- 1) Pokušaj rekonstrukciju iz archivedOrders + archivedItems ---
+    let reconstructed = []
     try {
-      const archivedOrders = await db.table('archivedOrders').toArray()
-      ordersById = new Map(archivedOrders.map(o => [o.id, o]))
-    } catch (e) {
-      // ako nema tabele (starija šema), samo preskoči
+      const [archivedOrders, archivedItems] = await Promise.all([
+        db.table('archivedOrders').toArray().catch(()=>[]),
+        db.table('archivedItems').toArray().catch(async ()=>{
+          try { return await db.table('archivedOrderItems').toArray() } catch { return [] }
+        })
+      ])
+
+      if (archivedOrders.length && archivedItems.length){
+        const itemsByOrder = new Map()
+        for (const it of archivedItems){
+          const arr = itemsByOrder.get(it.orderId) || []
+          arr.push(it)
+          itemsByOrder.set(it.orderId, arr)
+        }
+        for (const o of archivedOrders){
+          // Preferencirani vreme-markeri (štampa/arhiva)
+          const orderTs =
+              o.archivedAt
+           || o.closedAt
+           || o.printedAt
+           || o.completedAt
+           || o.updatedAt
+           || o.createdAt
+           || o.time
+           || null
+
+          const its = itemsByOrder.get(o.id) || []
+          for (const it of its){
+            reconstructed.push({
+              orderId: o.id,
+              tableId: o.tableId ?? null,
+              name: it.name ?? null,
+              productId: it.productId ?? null,
+              qty: Number(it.qty) || 0,
+              priceEach: Number(it.priceEach) || 0,
+              _ts: orderTs,   // za business dan
+              // day ne stavljamo ovde — imamo realan timestamp
+            })
+          }
+        }
+      }
+    } catch {
+      // ako tabele ne postoje, reconstructed ostaje prazan -> fallback niže
     }
 
-    // Obogati svaki sales red sa _ts
-    const sEnriched = s.map(row => {
-      const ts =
-        row.createdAt ||
-        row.timestamp ||
-        row.time ||
-        (row.orderId != null ? ordersById.get(row.orderId)?.createdAt : null) ||
-        null
-      return { ...row, _ts: ts }
-    })
-    setSales(sEnriched)
+    // --- 2) Fallback na sales ako rekonstrukcija nije dala ništa ---
+    if (!reconstructed.length){
+      try {
+        const s = await db.table('sales').toArray()
+        reconstructed = s.map(row => {
+          const ts =
+              row._ts
+           || row.archivedAt
+           || row.closedAt
+           || row.printedAt
+           || row.timestamp
+           || row.time
+           || row.createdAt
+           || null
+          return {
+            orderId: row.orderId ?? null,
+            tableId: row.tableId ?? null,
+            name: row.name ?? row.productName ?? null,
+            productId: row.productId ?? null,
+            qty: Number(row.qty) || 0,
+            priceEach: Number(row.priceEach) || 0,
+            _ts: ts,
+            day: row.day ?? null // ostavljamo day kao BACKUP za grupisanje ako ts izostane
+          }
+        })
+      } catch {
+        reconstructed = []
+      }
+    }
 
-    // Trenutno otkucano po stolovima (ne menja se logika)
-    const ordersOpen = await db.table('orders').where('status').equals('open').toArray()
-    const items = await db.table('orderItems').toArray()
+    setSales(reconstructed)
+
+    // --- 3) Trenutno otkucano po stolovima (ne menja se) ---
+    const [ordersOpen, items] = await Promise.all([
+      db.table('orders').where('status').equals('open').toArray().catch(()=>[]),
+      db.table('orderItems').toArray().catch(()=>[])
+    ])
     const byOrder = new Map()
     for (const it of items){
       const arr = byOrder.get(it.orderId) || []
@@ -154,8 +226,8 @@ export default function Reports(){
     let total = 0, count = 0
     for (const o of ordersOpen){
       const its = byOrder.get(o.id) || []
-      const t = its.reduce((s,x)=>s + x.qty * (x.priceEach||0), 0)
-      const c = its.reduce((s,x)=>s + x.qty, 0)
+      const t = its.reduce((s,x)=> s + (Number(x.qty)||0) * (Number(x.priceEach)||0), 0)
+      const c = its.reduce((s,x)=> s + (Number(x.qty)||0), 0)
       if (c > 0){
         byTable.push({ tableId: o.tableId, total: t, count: c })
         total += t; count += c
@@ -164,10 +236,10 @@ export default function Reports(){
     setOpenTotals({ total, count, byTable })
   }
 
-  // Grupisanje po "radnom danu" (granica 15:00)
+  // Grupisanje po radnom danu (15:00) – sada radi i kad postoji samo `day`
   const byDay = useMemo(()=> groupByBusinessDay(sales), [sales])
 
-  // Današnji radni dan (po granici 15:00)
+  // Današnji radni dan
   const todayBizKey = businessDayKey(new Date())
   const today = byDay.find(d=>d.day===todayBizKey)
 
@@ -176,10 +248,10 @@ export default function Reports(){
   const sumLast7 = last7.reduce((s,d)=>s+d.total,0)
 
   function printDay(d){
-    // Stavke za taj radni dan
     const itemsOfDay = sales.filter(s => {
-      const t = s._ts ?? s.createdAt ?? s.timestamp ?? s.time ?? null
-      const key = t ? businessDayKey(t) : (s.day ?? null)
+      const key =
+        (s._ts || s.createdAt) ? businessDayKey(s._ts || s.createdAt)
+        : (s.day ? businessDayKey(`${s.day}T00:00:00`) : null)
       return key === d.day
     })
     const grouped = groupItems(itemsOfDay)
@@ -212,9 +284,10 @@ export default function Reports(){
   function printWeek(){
     const daySet = new Set(last7.map(d => d.day))
     const itemsOfWeek = sales.filter(s => {
-      const t = s._ts ?? s.createdAt ?? s.timestamp ?? s.time ?? null
-      const key = t ? businessDayKey(t) : (s.day ?? null)
-      return daySet.has(key)
+      const key =
+        (s._ts || s.createdAt) ? businessDayKey(s._ts || s.createdAt)
+        : (s.day ? businessDayKey(`${s.day}T00:00:00`) : null)
+      return key && daySet.has(key)
     })
     const grouped = groupItems(itemsOfWeek)
     const css = buildPrintCSS()
@@ -250,7 +323,7 @@ export default function Reports(){
           <div className="flex items-center justify-between">
             <div>{today.day}</div>
             <div className="text-xl font-bold">{today.total.toFixed(2)} RSD</div>
-            <Button onClick={()=>printDay(today)}>Štampaj</Button>
+            <Button onClick={() => printDay(today)}>Štampaj</Button>
           </div>
         ) : (
           <div className="opacity-70">Nema podataka za današnji radni dan.</div>
