@@ -1,18 +1,22 @@
+// src/pages/Reports.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { db } from '../store/db.js'
 import { Card, Button } from '../components/UI.jsx'
 import { format } from 'date-fns'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
-/* ====================== POMOĆNE – RADNI DAN 15:00–05:00 ====================== */
-/** Iz lok. datuma vrati yyyy-MM-dd string */
+/* ====================== POMOĆNE – RADNI DAN (granica 15:00) ====================== */
+/** yyyy-MM-dd iz Date (lokalno) */
 function ymd(d){
   const y = d.getFullYear()
   const m = String(d.getMonth()+1).padStart(2,'0')
   const day = String(d.getDate()).padStart(2,'0')
   return `${y}-${m}-${day}`
 }
-/** Radni dan: ako je sat < 15, pripiši prethodnom danu; inače tekući. */
+/** Granica radnog dana: 15:00.
+ * - 00:00–14:59 -> PRETHODNI kalendarski dan
+ * - 15:00–23:59 -> TEKUĆI kalendarski dan
+ */
 function businessDayKey(dateLike){
   const d = (dateLike instanceof Date) ? dateLike : new Date(dateLike)
   if (isNaN(d.getTime())) return null
@@ -24,17 +28,12 @@ function businessDayKey(dateLike){
   }
   return ymd(d)
 }
-/** Pokušaj da iz reda izvučeš timestamp i pretvoriš u 'biz day' ključ. */
-function rowBizDay(r){
-  // najčešće polje
-  const t = r?.createdAt ?? r?.timestamp ?? r?.time ?? null
-  if (t){
-    const k = businessDayKey(t)
-    if (k) return k
-  }
-  // fallback ako postoji već spremljeno 'day'
-  if (r?.day) return r.day
-  return null
+/** Ljudski label opsega za dati “business day”: [dan 15:00] – [sutradan 14:59] */
+function businessDayRangeLabel(dayKey){
+  const [Y, M, D] = dayKey.split('-').map(Number)
+  const start = new Date(Y, M-1, D, 15, 0, 0)
+  const end = new Date(start); end.setDate(end.getDate()+1); end.setHours(14,59,59,999)
+  return `${format(start, 'yyyy-MM-dd HH:mm')} – ${format(end, 'yyyy-MM-dd HH:mm')}`
 }
 
 /* ====================== PRINT CSS ====================== */
@@ -72,10 +71,12 @@ function openPrint(html){
 function formatDateTime(d=new Date()){ return d.toLocaleString('sr-RS') }
 
 /* ====================== GRUPISANJE ====================== */
+/** Grupisanje po radnom danu – koristi _ts (timestamp) ako postoji, inače “day”. */
 function groupByBusinessDay(rows){
   const map = new Map()
   for (const r of rows){
-    const key = rowBizDay(r)
+    const t = r._ts ?? r.createdAt ?? r.timestamp ?? r.time ?? null
+    const key = t ? businessDayKey(t) : (r.day ?? null)
     if (!key) continue
     const prev = map.get(key) || { day: key, total: 0, count: 0 }
     prev.total += (r.qty || 0) * (r.priceEach || 0)
@@ -116,11 +117,31 @@ export default function Reports(){
   useEffect(()=>{ reload() },[])
 
   async function reload(){
-    // sve odštampane stavke
+    // Sve odštampane stavke
     const s = await db.table('sales').toArray()
-    setSales(s)
 
-    // trenutno otkucano po stolovima
+    // Upari sa archivedOrders da bismo imali SIGURAN timestamp (vreme štampe) kad ga nema u sales
+    let ordersById = new Map()
+    try {
+      const archivedOrders = await db.table('archivedOrders').toArray()
+      ordersById = new Map(archivedOrders.map(o => [o.id, o]))
+    } catch (e) {
+      // ako nema tabele (starija šema), samo preskoči
+    }
+
+    // Obogati svaki sales red sa _ts
+    const sEnriched = s.map(row => {
+      const ts =
+        row.createdAt ||
+        row.timestamp ||
+        row.time ||
+        (row.orderId != null ? ordersById.get(row.orderId)?.createdAt : null) ||
+        null
+      return { ...row, _ts: ts }
+    })
+    setSales(sEnriched)
+
+    // Trenutno otkucano po stolovima (ne menja se logika)
     const ordersOpen = await db.table('orders').where('status').equals('open').toArray()
     const items = await db.table('orderItems').toArray()
     const byOrder = new Map()
@@ -143,30 +164,28 @@ export default function Reports(){
     setOpenTotals({ total, count, byTable })
   }
 
-  // Grupisanje po "radnom danu"
+  // Grupisanje po "radnom danu" (granica 15:00)
   const byDay = useMemo(()=> groupByBusinessDay(sales), [sales])
 
-  // "Danas" je tekući radni dan (po pravilu 15h)
+  // Današnji radni dan (po granici 15:00)
   const todayBizKey = businessDayKey(new Date())
   const today = byDay.find(d=>d.day===todayBizKey)
 
-  // Poslednjih 7 "radnih dana"
+  // Poslednjih 7 radnih dana
   const last7 = byDay.slice(-7)
   const sumLast7 = last7.reduce((s,d)=>s+d.total,0)
 
   function printDay(d){
-    // uzmi sve stavke koje pripadaju tom radnom danu
-    const itemsOfDay = sales.filter(s => rowBizDay(s) === d.day)
+    // Stavke za taj radni dan
+    const itemsOfDay = sales.filter(s => {
+      const t = s._ts ?? s.createdAt ?? s.timestamp ?? s.time ?? null
+      const key = t ? businessDayKey(t) : (s.day ?? null)
+      return key === d.day
+    })
     const grouped = groupItems(itemsOfDay)
     const css = buildPrintCSS()
     const rows = renderGroupedRows(grouped)
-
-    // za header pokažemo opseg tog radnog dana (15:00–05:00)
-    const [Y, M, D] = d.day.split('-').map(Number)
-    const start = new Date(Y, M-1, D, 15, 0, 0)          // dan u 15:00
-    const end   = new Date(start); end.setDate(end.getDate()+1); end.setHours(5,0,0,0) // sutra u 05:00
-
-    const rangeLabel = `${format(start, 'yyyy-MM-dd HH:mm')} – ${format(end, 'yyyy-MM-dd HH:mm')}`
+    const rangeLabel = businessDayRangeLabel(d.day)
 
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
@@ -192,7 +211,11 @@ export default function Reports(){
 
   function printWeek(){
     const daySet = new Set(last7.map(d => d.day))
-    const itemsOfWeek = sales.filter(s => daySet.has(rowBizDay(s)))
+    const itemsOfWeek = sales.filter(s => {
+      const t = s._ts ?? s.createdAt ?? s.timestamp ?? s.time ?? null
+      const key = t ? businessDayKey(t) : (s.day ?? null)
+      return daySet.has(key)
+    })
     const grouped = groupItems(itemsOfWeek)
     const css = buildPrintCSS()
     const rowsDays = last7.map(d=>`<div class="row mono"><div>${d.day}</div><div>${d.total.toFixed(2)} RSD</div></div>`).join('')
@@ -250,28 +273,6 @@ export default function Reports(){
           </ResponsiveContainer>
         ) : (
           <div className="opacity-70">Nema podataka.</div>
-        )}
-      </Card>
-
-      <Card>
-        <div className="text-lg font-semibold mb-3">Trenutno otkucano (otvoreni stolovi)</div>
-        {openTotals.count>0 ? (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div>Ukupno</div>
-              <div className="text-xl font-bold">{openTotals.total.toFixed(2)} RSD ({openTotals.count} art)</div>
-            </div>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {openTotals.byTable.map((t,idx)=>(
-                <div key={idx} className="border rounded-xl px-3 py-2 flex items-center justify-between">
-                  <div>Sto #{t.tableId}</div>
-                  <div>{t.total.toFixed(2)} RSD ({t.count})</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="opacity-70">Trenutno nema otkucanih stavki na stolovima.</div>
         )}
       </Card>
 
