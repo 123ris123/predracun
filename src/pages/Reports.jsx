@@ -1,41 +1,93 @@
+// src/pages/Reports.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { db } from '../store/db.js'
 import { Card, Button } from '../components/UI.jsx'
 import { format } from 'date-fns'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
-/* ====================== RADNI DAN: 15:00 → 14:59 ====================== */
-/* Pravilo:
-   - < 15:00  -> PRETHODNI dan
-   - >= 15:00 -> TEKUĆI dan
-*/
-function ymd(d){
-  const y = d.getFullYear()
-  const m = String(d.getMonth()+1).padStart(2,'0')
-  const dd = String(d.getDate()).padStart(2,'0')
-  return `${y}-${m}-${dd}`
+/* ================== Local keys ================== */
+const LSK_LAST_PRESEK = 'lastPresekAtISO'
+const LSK_PRINTED_SIGS = 'printedSignatures.v1'   // Set stringova
+const LSK_PRESEK_HISTORY = 'presekHistory.v1'     // Array zapisa
+
+/* ================== Helpers ================== */
+function formatDateTime(d=new Date()){ return d.toLocaleString('sr-RS') }
+
+function getLastPresekAt(){
+  const s = localStorage.getItem(LSK_LAST_PRESEK)
+  if (!s) return null
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
 }
-function businessDayKey(dateLike){
-  if (!dateLike) return null
-  const d = (dateLike instanceof Date) ? dateLike : new Date(dateLike)
-  if (isNaN(d.getTime())) return null
-  const h = d.getHours()
-  if (h < 15){
-    const prev = new Date(d)
-    prev.setDate(prev.getDate()-1)
-    return ymd(prev)
+function setLastPresekAt(iso){ localStorage.setItem(LSK_LAST_PRESEK, iso) }
+
+function loadPrintedSigs(){
+  try {
+    const raw = localStorage.getItem(LSK_PRINTED_SIGS)
+    const arr = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(arr) ? arr : [])
+  } catch { return new Set() }
+}
+function savePrintedSigs(set){
+  try { localStorage.setItem(LSK_PRINTED_SIGS, JSON.stringify(Array.from(set))) } catch {}
+}
+function addPrintedSigs(sigs){
+  const set = loadPrintedSigs()
+  for (const s of sigs) set.add(s)
+  savePrintedSigs(set)
+}
+
+function loadHistory(){
+  try {
+    const raw = localStorage.getItem(LSK_PRESEK_HISTORY)
+    const arr = raw ? JSON.parse(raw) : []
+    return Array.isArray(arr) ? arr : []
+  } catch { return [] }
+}
+function saveHistory(list){
+  try { localStorage.setItem(LSK_PRESEK_HISTORY, JSON.stringify(list)) } catch {}
+}
+function pushHistoryEntry(entry){
+  const list = loadHistory()
+  list.push(entry)
+  saveHistory(list)
+}
+
+/* --------- Signature reda (stabilno filtriranje i bez timestamp-a) ---------
+   Pokušavamo da napravimo dovoljno jedinstven potpis:
+   - izvor (_src)
+   - orderId, tableId
+   - productId, name
+   - qty, priceEach
+   - timestamp (ako postoji)
+--------------------------------------------------------------------------- */
+function rowSignature(r){
+  const src = r._src || 'auto'
+  const ts = r._ts || r.createdAt || ''
+  const pid = r.productId ?? ''
+  const nm = r.name ?? r.productName ?? ''
+  const tid = r.tableId ?? ''
+  const oid = r.orderId ?? ''
+  const qty = Number(r.qty) || 0
+  const prc = Number(r.priceEach) || 0
+  return `${src}|o:${oid}|t:${tid}|p:${pid}|n:${nm}|q:${qty}|pe:${prc}|ts:${ts}`
+}
+
+/* Grupisanje artikala za prikaz/štampu */
+function groupItems(rows){
+  const m = new Map()
+  for (const r of rows){
+    const name = r.name || r.productName || `Artikal${r.productId ? ' #' + r.productId : ''}`
+    const qty  = Number(r.qty) || 0
+    const price= Number(r.priceEach) || 0
+    const prev = m.get(name) || { name, qty: 0, amt: 0 }
+    prev.qty += qty
+    prev.amt += qty * price
+    m.set(name, prev)
   }
-  return ymd(d)
-}
-// Label: D 15:00 – (D+1) 14:59
-function businessDayRangeLabel(dayKey){
-  const [Y, M, D] = dayKey.split('-').map(Number)
-  const start = new Date(Y, M-1, D, 15, 0, 0)
-  const end = new Date(start); end.setDate(end.getDate()+1); end.setHours(14,59,59,999)
-  return `${format(start, 'yyyy-MM-dd HH:mm')} – ${format(end, 'yyyy-MM-dd HH:mm')}`
+  return Array.from(m.values()).sort((a,b)=> b.amt - a.amt || b.qty - a.qty)
 }
 
-/* ====================== PRINT CSS/UTIL ====================== */
+/* Print CSS i util */
 function buildPrintCSS(){
   const SHIFT_MM = 2
   return `
@@ -74,71 +126,24 @@ function openPrint(html){
   w.document.close()
   w.focus()
 }
-function formatDateTime(d=new Date()){ return d.toLocaleString('sr-RS') }
 
-/* ====================== GRUPISANJE ====================== */
-function groupByBusinessDay(rows){
-  const map = new Map()
-  for (const r of rows){
-    // Ako postoji timestamp (_ts ili createdAt) -> računamo ključ po pravilu 15:00
-    // Ako NEMA timestamp nego samo r.day (string), tretiramo ga kao već izračunat radni dan.
-    let key = null
-    if (r._ts || r.createdAt) {
-      key = businessDayKey(r._ts || r.createdAt)
-    } else if (r.day) {
-      key = r.day // već je business-day string
-    }
-    if (!key) continue
-
-    const prev = map.get(key) || { day: key, total: 0, count: 0 }
-    const qty = Number(r.qty) || 0
-    const price = Number(r.priceEach) || 0
-    prev.total += qty * price
-    prev.count += qty
-    map.set(key, prev)
-  }
-  return Array.from(map.values()).sort((a,b)=> a.day.localeCompare(b.day))
-}
-function groupItems(rows){
-  const m = new Map()
-  for (const r of rows){
-    const name = r.name || r.productName || `Artikal${r.productId ? ' #' + r.productId : ''}`
-    const qty = Number(r.qty) || 0
-    const price = Number(r.priceEach) || 0
-    const prev = m.get(name) || { name, qty: 0, amt: 0 }
-    prev.qty += qty
-    prev.amt += qty * price
-    m.set(name, prev)
-  }
-  return Array.from(m.values()).sort((a,b)=> b.qty - a.qty || b.amt - a.amt)
-}
-function renderGroupedRows(grouped){
-  return grouped.map(it => {
-    const avg = it.qty ? (it.amt / it.qty) : 0
-    return `
-      <div class="row mono">
-        <div class="name">${it.name}</div>
-        <div class="unit">${it.qty}× ${avg.toFixed(2)}</div>
-        <div class="amt">${it.amt.toFixed(2)} RSD</div>
-      </div>
-    `
-  }).join('')
-}
-
-/* ====================== KOMPONENTA ====================== */
+/* ================== KOMPONENTA ================== */
 export default function Reports(){
-  const [sales, setSales] = useState([])
-  const [openTotals, setOpenTotals] = useState({ total:0, count:0, byTable:[] })
+  const [shiftRows, setShiftRows] = useState([])          // redovi za tekuću smenu
+  const [since, setSince] = useState(getLastPresekAt())   // poslednji presek (informativno)
+  const [loading, setLoading] = useState(true)
 
   useEffect(()=>{ reload() },[])
 
   async function reload(){
-    // 1) Pokušaj iz archivedOrders + archivedItems
+    setLoading(true)
+
+    // 1) Pokušaj arhive (archivedOrders + archivedItems)
     let reconstructed = []
     try {
       const [archivedOrders, archivedItems] = await Promise.all([
         db.table('archivedOrders').toArray().catch(()=>[]),
-        db.table('archivedItems').toArray().catch(async ()=>{
+        db.table('archivedItems').toArray().catch(async ()=> {
           try { return await db.table('archivedOrderItems').toArray() } catch { return [] }
         })
       ])
@@ -152,17 +157,13 @@ export default function Reports(){
         }
         for (const o of archivedOrders){
           const orderTs =
-              o.archivedAt
-           || o.closedAt
-           || o.printedAt
-           || o.completedAt
-           || o.updatedAt
-           || o.createdAt
-           || o.time
-           || null
+              o.archivedAt || o.closedAt || o.printedAt ||
+              o.completedAt || o.updatedAt || o.createdAt ||
+              o.time || null
           const its = itemsByOrder.get(o.id) || []
           for (const it of its){
             reconstructed.push({
+              _src: 'arch',
               orderId: o.id,
               tableId: o.tableId ?? null,
               name: it.name ?? null,
@@ -176,185 +177,150 @@ export default function Reports(){
       }
     } catch {}
 
-    // 2) Fallback na sales
+    // 2) Fallback: sales
     if (!reconstructed.length){
       try {
         const s = await db.table('sales').toArray()
         reconstructed = s.map(row => {
-          const ts =
-              row._ts
-           || row.archivedAt
-           || row.closedAt
-           || row.printedAt
-           || row.timestamp
-           || row.time
-           || row.createdAt
-           || null
+          const ts = row._ts || row.archivedAt || row.closedAt || row.printedAt ||
+                     row.timestamp || row.time || row.createdAt || null
           return {
+            _src: 'sales',
             orderId: row.orderId ?? null,
             tableId: row.tableId ?? null,
             name: row.name ?? row.productName ?? null,
             productId: row.productId ?? null,
             qty: Number(row.qty) || 0,
             priceEach: Number(row.priceEach) || 0,
-            _ts: ts,
-            day: row.day ?? null // tretiramo kao već izračunat business day ako nema ts
+            _ts: ts
           }
         })
       } catch {}
     }
 
-    setSales(reconstructed)
-
-    // 3) Trenutno otkucano po stolovima
-    const [ordersOpen, items] = await Promise.all([
-      db.table('orders').where('status').equals('open').toArray().catch(()=>[]),
-      db.table('orderItems').toArray().catch(()=>[])
-    ])
-    const byOrder = new Map()
-    for (const it of items){
-      const arr = byOrder.get(it.orderId) || []
-      arr.push(it)
-      byOrder.set(it.orderId, arr)
-    }
-    const byTable = []
-    let total = 0, count = 0
-    for (const o of ordersOpen){
-      const its = byOrder.get(o.id) || []
-      const t = its.reduce((s,x)=> s + (Number(x.qty)||0) * (Number(x.priceEach)||0), 0)
-      const c = its.reduce((s,x)=> s + (Number(x.qty)||0), 0)
-      if (c > 0){
-        byTable.push({ tableId: o.tableId, total: t, count: c })
-        total += t; count += c
+    // 3) Filtriranje: isključi sve prethodno odštampane potpise
+    const printed = loadPrintedSigs()
+    const sinceTs = since?.getTime?.() || null
+    const filtered = []
+    for (const r of reconstructed){
+      const sig = rowSignature(r)
+      if (printed.has(sig)) continue
+      // ako postoji vremenski anchor, i red ima timestamp, možeš dodatno da filtriraš po "od poslednjeg preseka"
+      if (sinceTs){
+        const t = r._ts ? new Date(r._ts).getTime() : NaN
+        if (!isNaN(t) && t < sinceTs) continue
       }
+      filtered.push({ ...r, _sig: sig })
     }
-    setOpenTotals({ total, count, byTable })
+
+    setShiftRows(filtered)
+    setLoading(false)
   }
 
-  // Grupisanje po pravilu 15:00
-  const byDay = useMemo(()=> groupByBusinessDay(sales), [sales])
+  const itemsGrouped = useMemo(()=>groupItems(shiftRows), [shiftRows])
+  const total = useMemo(()=> shiftRows.reduce((s,i)=> s + (Number(i.qty)||0) * (Number(i.priceEach)||0), 0), [shiftRows])
+  const count = useMemo(()=> shiftRows.reduce((s,i)=> s + (Number(i.qty)||0), 0), [shiftRows])
 
-  // Današnji radni dan (po istom pravilu)
-  const todayBizKey = businessDayKey(new Date())
-  const today = byDay.find(d=>d.day===todayBizKey)
-
-  // Poslednjih 7 radnih dana
-  const last7 = byDay.slice(-7)
-  const sumLast7 = last7.reduce((s,d)=>s+d.total,0)
-
-  function printDay(d){
-    const itemsOfDay = sales.filter(s => {
-      if (s._ts || s.createdAt) {
-        return businessDayKey(s._ts || s.createdAt) === d.day
-      }
-      if (s.day) return s.day === d.day
-      return false
-    })
-    const grouped = groupItems(itemsOfDay)
+  function printPresek(){
+    if (!shiftRows.length) return
+    const now = new Date()
     const css = buildPrintCSS()
-    const rows = renderGroupedRows(grouped)
-    const rangeLabel = businessDayRangeLabel(d.day)
+
+    // Redovi artikala (za štampus)
+    const rowsHTML = itemsGrouped.map(it => {
+      const avg = it.qty ? (it.amt / it.qty) : 0
+      return `
+        <div class="row mono">
+          <div class="name">${it.name}</div>
+          <div class="unit">${it.qty}× ${avg.toFixed(2)}</div>
+          <div class="amt">${it.amt.toFixed(2)} RSD</div>
+        </div>
+      `
+    }).join('')
+
+    const sinceLbl = since ? format(since, 'yyyy-MM-dd HH:mm') : 'početak'
+    const nowLbl   = format(now, 'yyyy-MM-dd HH:mm')
 
     const html = `
       <!doctype html><html><head><meta charset="utf-8">${css}</head>
       <body><div class="receipt">
-        <div class="center bold">PRESEK ZA RADNI DAN</div>
-        <div class="center small">${rangeLabel}</div>
+        <div class="center bold">PRESEK SMENE</div>
+        <div class="center small">Od: ${sinceLbl} &nbsp;–&nbsp; Do: ${nowLbl}</div>
         <div class="hr"></div>
-        <div class="row mono"><div>Ukupan promet</div><div class="bold">${d.total.toFixed(2)} RSD</div></div>
-        <div class="row mono"><div>Ukupno artikala</div><div class="bold">${d.count}</div></div>
+        <div class="row mono"><div>Ukupan promet</div><div class="bold">${total.toFixed(2)} RSD</div></div>
+        <div class="row mono"><div>Ukupno artikala</div><div class="bold">${count}</div></div>
         <div class="hr"></div>
         <div class="center small bold">ARTIKLI</div>
         <div class="row small mono" style="opacity:.9"><div class="name">Artikal</div><div class="unit">Kol × Cena</div><div class="amt">Ukupno</div></div>
-        ${rows || '<div class="small" style="opacity:.8">Nema podataka o artiklima.</div>'}
+        ${rowsHTML || '<div class="small" style="opacity:.8">Nema podataka o artiklima.</div>'}
         <div class="hr"></div>
-        <div class="center small mono">--------------</div>
-        <div class="center small mono">Štampano: ${formatDateTime(new Date())}</div>
+        <div class="center small mono">Štampano: ${formatDateTime(now)}</div>
       </div>
       <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 80) };</script>
       </body></html>
     `
+    // 1) Štampaj
     openPrint(html)
-  }
 
-  function printWeek(){
-    const daySet = new Set(last7.map(d => d.day))
-    const itemsOfWeek = sales.filter(s => {
-      if (s._ts || s.createdAt) return daySet.has(businessDayKey(s._ts || s.createdAt))
-      if (s.day) return daySet.has(s.day)
-      return false
+    // 2) Obeleži SVE trenutne redove kao odštampane (potpisi)
+    const sigs = shiftRows.map(r => r._sig || rowSignature(r))
+    addPrintedSigs(sigs)
+
+    // 3) Upamti istoriju preseka (za kasniji uvid)
+    pushHistoryEntry({
+      atISO: now.toISOString(),
+      sinceISO: since ? since.toISOString() : null,
+      total,
+      count,
+      items: itemsGrouped   // naziv, qty, amt
     })
-    const grouped = groupItems(itemsOfWeek)
-    const css = buildPrintCSS()
-    const rowsDays = last7.map(d=>`<div class="row mono"><div>${d.day}</div><div>${d.total.toFixed(2)} RSD</div></div>`).join('')
-    const rowsItems = renderGroupedRows(grouped)
-    const html = `
-      <!doctype html><html><head><meta charset="utf-8">${css}</head>
-      <body><div class="receipt">
-        <div class="center bold">PRESEK POSLEDNJIH 7 RADNIH DANA</div>
-        <div class="hr"></div>
-        ${rowsDays || '<div class="small" style="opacity:.8">Nema podataka.</div>'}
-        <div class="hr"></div>
-        <div class="row mono"><div class="bold">Ukupno 7 dana</div><div class="bold">${sumLast7.toFixed(2)} RSD</div></div>
-        <div class="hr"></div>
-        <div class="center small bold">ARTIKLI (UKUPNO)</div>
-        <div class="row small mono" style="opacity:.9"><div class="name">Artikal</div><div class="unit">Kol × Cena</div><div class="amt">Ukupno</div></div>
-        ${rowsItems || '<div class="small" style="opacity:.8">Nema podataka o artiklima.</div>'}
-        <div class="hr"></div>
-        <div class="center small mono">--------------</div>
-        <div class="center small mono">Štampano: ${formatDateTime(new Date())}</div>
-      </div>
-      <script>window.onload=()=>{ setTimeout(()=>{ window.print(); window.close(); }, 80) };</script>
-      </body></html>
-    `
-    openPrint(html)
+
+    // 4) Pomeri anchor i očisti prikaz
+    setLastPresekAt(now.toISOString())
+    setSince(now)
+    setShiftRows([])
   }
 
   return (
-    <div className="max-w-6xl mx-auto p-4 space-y-6">
+    <div className="max-w-4xl mx-auto p-4 space-y-6">
       <Card>
-        <div className="text-lg font-semibold mb-3">Danas (odštampani predračuni — radni dan)</div>
-        {today ? (
-          <div className="flex items-center justify-between">
-            <div>{today.day}</div>
-            <div className="text-xl font-bold">{today.total.toFixed(2)} RSD</div>
-            <Button onClick={() => printDay(today)}>Štampaj</Button>
-          </div>
-        ) : (
-          <div className="opacity-70">Nema podataka za današnji radni dan.</div>
-        )}
-      </Card>
+        <div className="text-lg font-semibold mb-2">Presek (tekuća smena)</div>
 
-      <Card>
-        <div className="flex items-center justify-between mb-3">
-          <div className="text-lg font-semibold">Poslednjih 7 radnih dana</div>
-          {last7.length>0 && <Button onClick={printWeek}>Štampaj 7 dana</Button>}
+        <div className="text-sm opacity-80 mb-2">
+          {since
+            ? <>Smena od <b>{format(since, 'yyyy-MM-dd HH:mm')}</b> do <b>{format(new Date(), 'yyyy-MM-dd HH:mm')}</b></>
+            : <>Smena od <b>početka</b> do <b>{format(new Date(), 'yyyy-MM-dd HH:mm')}</b></>
+          }
         </div>
-        {last7.length>0 ? (
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={last7}>
-              <XAxis dataKey="day"/>
-              <YAxis/>
-              <Tooltip/>
-              <Bar dataKey="total" />
-            </BarChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="opacity-70">Nema podataka.</div>
-        )}
-      </Card>
 
-      <Card>
-        <div className="text-lg font-semibold mb-3">Svi radni dani</div>
-        <div className="space-y-1">
-          {byDay.map(d=>(
-            <div key={d.day} className="flex items-center justify-between border-b py-1">
-              <div>{d.day}</div>
-              <div>{d.total.toFixed(2)} RSD ({d.count} art)</div>
-              <Button size="sm" onClick={()=>printDay(d)}>Štampa</Button>
+        <div className="flex items-center justify-between">
+          <div className="text-xl font-bold">{total.toFixed(2)} RSD</div>
+          <div className="opacity-80">{count} artikala</div>
+          <div className="flex gap-2">
+            <Button onClick={printPresek} disabled={loading || shiftRows.length===0}>
+              Štampaj presek (resetuj)
+            </Button>
+            <Button onClick={reload} className="bg-neutral-700 hover:bg-neutral-600">Osveži</Button>
+          </div>
+        </div>
+
+        <div className="mt-4 max-h-[55vh] overflow-auto pr-1 space-y-1">
+          {loading && <div className="opacity-70">Učitavam…</div>}
+          {!loading && !shiftRows.length && (
+            <div className="opacity-70">Nema podataka u tekućoj smeni.</div>
+          )}
+          {!loading && shiftRows.length>0 && itemsGrouped.map(it=>(
+            <div key={it.name} className="flex items-center justify-between border-b py-1">
+              <div className="font-medium">{it.name}</div>
+              <div className="text-sm opacity-80">{it.qty}×</div>
+              <div className="text-sm font-semibold">{it.amt.toFixed(2)} RSD</div>
             </div>
           ))}
-          {byDay.length===0 && <div className="opacity-70">Nema podataka.</div>}
+        </div>
+
+        <div className="mt-3 text-xs opacity-70">
+          Štampanjem preseka svi redovi iz te smene se trajno označavaju kao odštampani
+          (ne pojavljuju se ponovo ni posle refreša / sledećeg dana). Istorija preseka se čuva lokalno.
         </div>
       </Card>
     </div>
